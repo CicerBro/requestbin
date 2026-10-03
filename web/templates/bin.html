@@ -1,0 +1,187 @@
+{{define "title"}}{{if .HasBin}}Bin {{.Bin.ID}} · RequestBin{{else}}Bins · RequestBin{{end}}{{end}}
+{{define "content"}}
+{{if not .HasBin}}
+<div class="crumbbar">
+  <a href="/bins">Bins</a>
+  <span class="crumb-sep" aria-hidden="true">/</span>
+  <span class="crumb-current">All</span>
+</div>
+<div class="unselected">
+  <div class="empty-orb" aria-hidden="true">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+  </div>
+  {{if .Bins}}
+  <h1>Select a bin</h1>
+  <p>Choose a bin in the sidebar to inspect captured requests.</p>
+  {{else}}
+  <h1>No bins yet</h1>
+  <p>Create a bin to get a URL. Any HTTP request sent to it is captured here.</p>
+  <form method="post" action="/bins">
+    <button class="new-bin" type="submit">+ New bin</button>
+  </form>
+  {{end}}
+</div>
+{{else}}
+<div class="inspector" data-bin-id="{{.Bin.ID}}" data-hook-url="{{.Bin.HookURL}}" data-inspect-url="{{.Bin.InspectURL}}" data-created="{{.Bin.Created}}">
+  <div class="insp-top">
+    <div class="insp-id">
+      <a class="back-link" href="/bins" aria-label="Back to bins">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      </a>
+      <nav class="crumbs" aria-label="Breadcrumb">
+        <a href="/bins">Bins</a>
+        <span class="crumb-sep" aria-hidden="true">/</span>
+        <span class="crumb-group">local</span>
+        <span class="crumb-sep" aria-hidden="true">/</span>
+        <span class="crumb-current">{{.Bin.ID}}</span>
+      </nav>
+      <span class="bin-kicker">Bin</span>
+      <code class="bin-id-mono">{{.Bin.ID}}</code>
+      <span class="live-dot" id="live-dot"><span class="pulse" aria-hidden="true"></span> Live</span>
+    </div>
+    <div class="insp-actions">
+      <button class="btn" type="button" id="refresh-bin">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 4v6h-6"/><path d="M20.5 13A9 9 0 1 1 19 7.5L23 10"/></svg>
+        Refresh
+      </button>
+      <form class="action-form" method="post" action="/bins/{{.Bin.ID}}/clear" data-confirm="Clear all captured requests from this bin?">
+        <button class="btn btn-clear" type="submit">Clear</button>
+      </form>
+      <form class="action-form" method="post" action="/bins/{{.Bin.ID}}/delete" data-confirm="Delete this bin and its captured requests?">
+        <button class="btn btn-delete" type="submit">Delete</button>
+      </form>
+    </div>
+  </div>
+  <div class="hookbar">
+    <code id="hook-url">{{.Bin.HookURL}}</code>
+    <button class="icon-btn" type="button" data-copy-target="hook-url" data-label="Copy URL" aria-label="Copy URL">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </button>
+  </div>
+  {{range $i, $req := .Requests}}
+  <input class="sel" type="radio" name="selected-request" id="sel-{{$i}}" data-id="{{$req.ID}}"{{if eq $i 0}} checked{{end}}>
+  {{end}}
+  <div class="split">
+    <aside class="req-col{{if not .Requests}} is-empty{{end}}">
+      <div class="req-meta">
+        <span class="req-count" id="req-count">{{len .Requests}} request{{if ne (len .Requests) 1}}s{{end}}</span>
+      </div>
+      <div class="filter-row">
+        <span class="filter-chip">All <span id="filter-count">{{len .Requests}}</span></span>
+      </div>
+      <div class="req-list" id="req-list">
+        {{if not .Requests}}
+        <div class="list-empty">
+          <p class="list-empty-title">No requests yet</p>
+          <p>Send any HTTP request to this bin URL. It shows up here.</p>
+        </div>
+        {{else}}
+        {{range $i, $req := .Requests}}
+        <label class="req-row" for="sel-{{$i}}" title="{{$req.Method}} {{$req.Path}}">
+          <span class="http-pill">HTTP</span>
+          <span class="req-ip">{{clientIP $req.RemoteAddr}}</span>
+          <time class="req-time" datetime="{{$req.Timestamp}}">{{relWhen $req.Timestamp}}</time>
+        </label>
+        {{end}}
+        {{end}}
+      </div>
+      <div class="list-foot">
+        <span id="foot-count">{{len .Requests}} request{{if ne (len .Requests) 1}}s{{end}}</span>
+        <span class="list-hint">Click a row to view details</span>
+      </div>
+    </aside>
+    <div class="detail-slot" id="detail-slot">
+      <div class="empty-detail" id="empty-detail"{{if .Requests}} hidden{{end}}>
+        <h2>No request selected</h2>
+        <p>Send any HTTP request to the URL above. It shows up in the list.</p>
+      </div>
+      {{range $i, $req := .Requests}}
+      {{$pretty := prettyJSON $req.ContentType $req.Body}}
+      {{$head := rawHead $req.Method $req.Path $req.Headers}}
+      {{$raw := printf "%s%s" $head $req.Body}}
+      <article class="detail-body" id="pane-{{$i}}">
+        <header class="detail-head">
+          <a class="detail-back" href="#req-list">Back to list</a>
+          <div class="detail-line">
+            <span class="{{methodClass $req.Method}}">{{$req.Method}}</span>
+            <span class="detail-sep" aria-hidden="true">/</span>
+            <span class="status-pill" title="HTTP status">200</span>
+            <span class="detail-size">{{bytesLabel $req.ContentLength}}</span>
+            <span class="detail-aside">
+              <span class="detail-ip">{{clientIP $req.RemoteAddr}}</span>
+              <time class="detail-when" datetime="{{$req.Timestamp}}">{{stamp $req.Timestamp}}</time>
+            </span>
+          </div>
+        </header>
+        <section class="req-card">
+          <input class="view-input" type="radio" name="view-{{$i}}" id="view-{{$i}}-raw" value="raw"{{if not $pretty}} checked{{end}}>
+          {{if $pretty}}
+          <input class="view-input" type="radio" name="view-{{$i}}" id="view-{{$i}}-pretty" value="pretty" checked>
+          {{end}}
+          <header class="card-head">
+            <h2>
+              <svg class="card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              Request
+              <span class="http-tag">HTTP</span>
+            </h2>
+            <span class="msg-stat stat-raw">{{statLabel $raw}}</span>
+            {{if $pretty}}<span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $head $pretty)}}</span>{{end}}
+            <div class="view-toggle" role="group" aria-label="Request body format">
+              <label for="view-{{$i}}-raw">Raw</label>
+              {{if $pretty}}
+              <label for="view-{{$i}}-pretty">Pretty JSON</label>
+              {{else}}
+              <span class="is-disabled" title="Body is not JSON">Pretty JSON</span>
+              {{end}}
+            </div>
+            <button class="icon-btn" type="button" data-copy-visible aria-label="Copy request">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </header>
+          <pre class="msg view-raw">{{$raw}}</pre>
+          {{if $pretty}}<pre class="msg view-pretty"><span class="msg-lead">{{$head}}</span><span class="json">{{$pretty}}</span></pre>{{end}}
+        </section>
+        <section class="kv-card">
+          <h3>Query <span class="kv-n">{{len $req.Query}}</span></h3>
+          {{if $req.Query}}
+          <table class="kv"><tbody>
+            {{range $req.Query}}<tr><th>{{.Name}}</th><td>{{.Value}}</td></tr>{{end}}
+          </tbody></table>
+          {{else}}<p class="none">No query parameters.</p>{{end}}
+          <h3>Form <span class="kv-n">{{len $req.Form}}</span></h3>
+          {{if $req.Form}}
+          <table class="kv"><tbody>
+            {{range $req.Form}}<tr><th>{{.Name}}</th><td>{{.Value}}</td></tr>{{end}}
+          </tbody></table>
+          {{else}}<p class="none">No form fields.</p>{{end}}
+        </section>
+        <section class="req-card">
+          <header class="card-head">
+            <h2>
+              <svg class="card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              Response
+              <span class="http-tag">HTTP</span>
+            </h2>
+            <span class="msg-stat">{{hookStat $.Bin.ID $req.ID}}</span>
+            <button class="icon-btn" type="button" data-copy-target="resp-{{$i}}" data-label="Copy response" aria-label="Copy response">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </header>
+          <pre class="msg" id="resp-{{$i}}"><span class="msg-lead">{{hookHead}}</span><span class="json">{{hookBody $.Bin.ID $req.ID}}</span></pre>
+        </section>
+      </article>
+      {{end}}
+    </div>
+  </div>
+  {{if .Requests}}
+  <style id="sel-style">
+    {{range $i, $req := .Requests}}
+    #sel-{{$i}}:checked ~ .split label[for="sel-{{$i}}"] { background: #e7f0ff; }
+    #sel-{{$i}}:focus-visible ~ .split label[for="sel-{{$i}}"] { outline: 2px solid #2563eb; outline-offset: -2px; }
+    #sel-{{$i}}:checked ~ .split #pane-{{$i}} { display: flex; }
+    {{end}}
+  </style>
+  {{end}}
+</div>
+{{end}}
+{{end}}

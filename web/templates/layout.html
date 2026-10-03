@@ -1,0 +1,63 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{block "title" .}}RequestBin{{end}}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  {{if .Shell}}
+  <div class="app">
+    <aside class="sidebar">
+      <div class="side-top">
+        <a class="side-brand" href="/bins">
+          <span class="logo" aria-hidden="true">R</span>
+          <span class="side-name">RequestBin</span>
+        </a>
+        <nav class="side-nav" aria-label="Primary">
+          <a href="/bins" data-nav="bins">Bins</a>
+          <a href="/tools" data-nav="tools">HTTP tools</a>
+        </nav>
+        <form class="new-bin-form" method="post" action="/bins">
+          <button class="new-bin" type="submit">+ New bin</button>
+        </form>
+      </div>
+      <p class="side-label">Bins</p>
+      <div class="bin-list" id="bin-list">
+        {{if not .Bins}}
+        <p class="side-empty">No bins yet</p>
+        {{else}}
+        {{range .Bins}}
+        <a class="bin-link{{if .Active}} is-active{{end}}" href="/bins/{{.ID}}"{{if .Active}} aria-current="page"{{end}}>
+          <span class="bin-link-id">{{.ID}}</span>
+          <span class="bin-link-meta">{{.Requests}} request{{if ne .Requests 1}}s{{end}}</span>
+        </a>
+        {{end}}
+        {{end}}
+      </div>
+    </aside>
+    <div class="workspace">
+      {{template "content" .}}
+    </div>
+  </div>
+  {{else}}
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="wordmark" href="/bins">
+        <span class="logo" aria-hidden="true">R</span>
+        RequestBin
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="/bins" data-nav="bins">Bins</a>
+        <a href="/tools" data-nav="tools">HTTP tools</a>
+      </nav>
+    </div>
+  </header>
+  {{template "content" .}}
+  {{end}}
+  <script src="/static/js/highlight.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
+{{end}}

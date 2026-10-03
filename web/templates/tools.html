@@ -1,0 +1,36 @@
+{{define "title"}}HTTP tools · RequestBin{{end}}
+{{define "content"}}
+<div class="crumbbar">
+  <a href="/bins">Bins</a>
+  <span class="crumb-sep" aria-hidden="true">/</span>
+  <span class="crumb-current">HTTP tools</span>
+</div>
+<main class="tools">
+  <header class="tools-head">
+    <h1>HTTP tools</h1>
+    <p>Try status codes, headers, redirects, auth, and echo on this server. Each link calls a live path. Path placeholders and query parameters are explained under the link.</p>
+  </header>
+  {{range .Groups}}
+  <section class="group">
+    <h2>{{.Title}}</h2>
+    <ul class="endpoints">
+      {{range .Items}}
+      <li>
+        <div class="endpoint-line">
+          <span class="badge badge-{{.Method}}">{{.Method}}</span>
+          <a href="{{if .Href}}{{.Href}}{{else}}{{.Path}}{{end}}"><code>{{.Path}}</code></a>
+        </div>
+        <p class="endpoint-desc">{{.Description}}</p>
+        {{if .Segments}}
+        <p class="endpoint-detail"><span class="detail-label">Path</span>{{range .Segments}} <span class="detail-item"><code>{{.Name}}</code> {{.Text}}</span>{{end}}</p>
+        {{end}}
+        {{if .Params}}
+        <p class="endpoint-detail"><span class="detail-label">Query</span>{{range .Params}} <span class="detail-item"><code>{{.Name}}</code> {{.Text}}</span>{{end}}</p>
+        {{end}}
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+</main>
+{{end}}
