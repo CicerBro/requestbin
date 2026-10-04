@@ -14,5 +14,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/requestbin . \
 FROM scratch
 COPY --from=build /out/requestbin /requestbin
 WORKDIR /app
+VOLUME ["/app/data"]
 EXPOSE 8080
+LABEL org.opencontainers.image.source="https://github.com/CicerBro/requestbin"
 ENTRYPOINT ["/requestbin"]
