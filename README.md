@@ -4,6 +4,8 @@ Self-hosted request inspector, in the style of requestbin.net, with an [httpbin]
 
 Create a bin, send any HTTP request to its hook URL, and inspect the method, path, headers, query, form, and body. Each bin belongs to the browser that created it.
 
+![RequestBin inspector showing a captured webhook](docs/screenshot.png)
+
 ## Run
 
 Requires Go 1.27.1.
