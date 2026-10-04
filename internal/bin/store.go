@@ -1,7 +1,9 @@
 // Package bin stores request bins in memory and, when opened with a path,
 // mirrors them to a JSON file. Bins expire DefaultTTL after creation
-// (override with BIN_TTL). The store keeps at most MaxBins bins and
-// MaxRequestsPerBin captured requests on each bin, dropping the oldest.
+// (override with BIN_TTL). The store keeps at most MaxBins bins
+// (MAX_BINS) and MaxRequestsPerBin captured requests on each bin
+// (MAX_REQUESTS_PER_BIN), dropping the oldest. Captured bodies are
+// limited to MaxBodyBytes (MAX_BODY_BYTES).
 package bin
 
 import (
@@ -83,6 +85,24 @@ type Summary struct {
 	Requests int
 }
 
+// Limits is how many bins and requests are kept, and how large a captured body may be.
+// Every field must be positive. DefaultLimits matches the unset environment variables.
+type Limits struct {
+	MaxBins           int
+	MaxRequestsPerBin int
+	MaxBodyBytes      int
+}
+
+// DefaultLimits returns the built-in caps used when MAX_BINS, MAX_REQUESTS_PER_BIN,
+// and MAX_BODY_BYTES are unset.
+func DefaultLimits() Limits {
+	return Limits{
+		MaxBins:           MaxBins,
+		MaxRequestsPerBin: MaxRequestsPerBin,
+		MaxBodyBytes:      MaxBodyBytes,
+	}
+}
+
 // Store holds bins in process memory and optionally a JSON file.
 type Store struct {
 	mu      sync.Mutex
@@ -90,6 +110,7 @@ type Store struct {
 	order   []string // oldest first
 	maxBins int
 	maxReqs int
+	maxBody int
 	path    string
 	ttl     time.Duration
 	now     func() time.Time
@@ -117,24 +138,37 @@ type storedBin struct {
 
 // NewStore returns an empty in-memory store with the default caps and TTL.
 func NewStore() *Store {
+	limits := DefaultLimits()
 	return &Store{
 		bins:    make(map[string]*storedBin),
-		maxBins: MaxBins,
-		maxReqs: MaxRequestsPerBin,
+		maxBins: limits.MaxBins,
+		maxReqs: limits.MaxRequestsPerBin,
+		maxBody: limits.MaxBodyBytes,
 		ttl:     DefaultTTL,
 		now:     time.Now,
 	}
 }
 
 // Open loads bins from path, drops those older than ttl, and saves on later changes.
-// A missing file starts an empty store. ttl must be positive.
+// A missing file starts an empty store. ttl must be positive. Caps are DefaultLimits.
 func Open(path string, ttl time.Duration) (*Store, error) {
+	return OpenWithLimits(path, ttl, DefaultLimits())
+}
+
+// OpenWithLimits is Open with explicit caps. ttl and every limit must be positive.
+func OpenWithLimits(path string, ttl time.Duration, limits Limits) (*Store, error) {
 	if ttl <= 0 {
 		return nil, errors.New("bin ttl must be positive")
+	}
+	if limits.MaxBins <= 0 || limits.MaxRequestsPerBin <= 0 || limits.MaxBodyBytes <= 0 {
+		return nil, errors.New("bin limits must be positive")
 	}
 	s := NewStore()
 	s.path = path
 	s.ttl = ttl
+	s.maxBins = limits.MaxBins
+	s.maxReqs = limits.MaxRequestsPerBin
+	s.maxBody = limits.MaxBodyBytes
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -319,7 +353,7 @@ func (s *Store) Capture(id string, r *http.Request) (Request, error) {
 	if _, ok := s.Get(id); !ok {
 		return Request{}, ErrNotFound
 	}
-	rec, err := buildRequest(id, r)
+	rec, err := buildRequest(id, r, s.maxBody)
 	if err != nil {
 		return Request{}, err
 	}

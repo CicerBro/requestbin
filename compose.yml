@@ -6,6 +6,8 @@ services:
       - "8080:8080"
     volumes:
       - requestbin:/app/data
+    # Optional retention and capacity. Unset keeps the defaults:
+    # BIN_TTL=48h  MAX_BINS=200  MAX_REQUESTS_PER_BIN=100  MAX_BODY_BYTES=1048576
     restart: unless-stopped
 
 volumes:

@@ -65,11 +65,11 @@ Clear and delete also require the key.
 | Limit | Value |
 | --- | --- |
 | Bin lifetime | 48 hours after creation (`BIN_TTL`, a Go duration such as `168h`) |
-| Bins kept | 200 (oldest dropped) |
-| Requests per bin | 100 (oldest dropped) |
-| Request body | 1 MiB |
+| Bins kept | 200 (oldest dropped; `MAX_BINS`) |
+| Requests per bin | 100 (oldest dropped; `MAX_REQUESTS_PER_BIN`) |
+| Request body | 1 MiB (`MAX_BODY_BYTES`, bytes; default `1048576`) |
 
-`BIN_TTL` must be a positive duration.
+`BIN_TTL` must be a positive duration. `MAX_BINS`, `MAX_REQUESTS_PER_BIN`, and `MAX_BODY_BYTES` must be positive integers. Unset variables keep these defaults.
 
 ## HTTP tools
 

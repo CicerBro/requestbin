@@ -2,6 +2,7 @@ package bin
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -12,8 +13,8 @@ import (
 	"time"
 )
 
-func buildRequest(id string, r *http.Request) (Request, error) {
-	raw, err := readBody(r)
+func buildRequest(id string, r *http.Request, maxBody int) (Request, error) {
+	raw, err := readBody(r, maxBody)
 	if err != nil {
 		return Request{}, err
 	}
@@ -22,10 +23,10 @@ func buildRequest(id string, r *http.Request) (Request, error) {
 		return Request{}, err
 	}
 
-	captured, truncated := truncateBody(raw)
+	captured, truncated := truncateBody(raw, maxBody)
 	text := strings.ToValidUTF8(string(captured), "\uFFFD")
 	if truncated {
-		text += "\n[truncated to 1 MiB]"
+		text += "\n[truncated to " + formatBodyLimit(maxBody) + "]"
 	}
 
 	contentType := ""
@@ -44,24 +45,39 @@ func buildRequest(id string, r *http.Request) (Request, error) {
 		Headers:       flattenHeaders(r.Header),
 		Query:         parseEncodedPairs(rawQuery(r)),
 		Body:          text,
-		Form:          parseForm(contentType, captured),
+		Form:          parseForm(contentType, captured, maxBody),
 	}, nil
 }
 
-func readBody(r *http.Request) ([]byte, error) {
+func readBody(r *http.Request, maxBody int) ([]byte, error) {
 	if r.Body == nil {
 		return []byte{}, nil
 	}
 	defer r.Body.Close()
 	// Read one extra byte so a body that is exactly the cap is not marked truncated.
-	return io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes+1))
+	return io.ReadAll(io.LimitReader(r.Body, int64(maxBody)+1))
 }
 
-func truncateBody(raw []byte) ([]byte, bool) {
-	if len(raw) > MaxBodyBytes {
-		return raw[:MaxBodyBytes], true
+func truncateBody(raw []byte, maxBody int) ([]byte, bool) {
+	if len(raw) > maxBody {
+		return raw[:maxBody], true
 	}
 	return raw, false
+}
+
+// formatBodyLimit renders a byte cap the way the default 1 MiB limit always has.
+func formatBodyLimit(n int) string {
+	const (
+		kib = 1 << 10
+		mib = 1 << 20
+	)
+	if n >= mib && n%mib == 0 {
+		return fmt.Sprintf("%d MiB", n/mib)
+	}
+	if n >= kib && n%kib == 0 {
+		return fmt.Sprintf("%d KiB", n/kib)
+	}
+	return fmt.Sprintf("%d bytes", n)
 }
 
 func requestURI(r *http.Request) string {
@@ -153,7 +169,7 @@ func unescapeQuery(s string) string {
 	return u
 }
 
-func parseForm(contentType string, body []byte) []Field {
+func parseForm(contentType string, body []byte, maxBody int) []Field {
 	if contentType == "" || len(body) == 0 {
 		return []Field{}
 	}
@@ -169,13 +185,13 @@ func parseForm(contentType string, body []byte) []Field {
 		if boundary == "" {
 			return []Field{}
 		}
-		return parseMultipart(body, boundary)
+		return parseMultipart(body, boundary, maxBody)
 	default:
 		return []Field{}
 	}
 }
 
-func parseMultipart(body []byte, boundary string) []Field {
+func parseMultipart(body []byte, boundary string, maxBody int) []Field {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	out := []Field{}
 	for {
@@ -196,7 +212,7 @@ func parseMultipart(body []byte, boundary string) []Field {
 			_, _ = io.Copy(io.Discard, part)
 			continue
 		}
-		value, _ := io.ReadAll(io.LimitReader(part, MaxBodyBytes))
+		value, _ := io.ReadAll(io.LimitReader(part, int64(maxBody)))
 		out = append(out, Field{
 			Name:  name,
 			Value: strings.ToValidUTF8(string(value), "\uFFFD"),

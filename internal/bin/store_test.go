@@ -249,6 +249,74 @@ func TestBodyLimit(t *testing.T) {
 	}
 }
 
+func TestConfiguredBodyLimit(t *testing.T) {
+	s := NewStore()
+	s.maxBody = 8
+	info, err := s.Create("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := capture(t, s, info.ID, http.MethodPost, "/hooks/"+info.ID, "text/plain", []byte("0123456789"))
+	if rec.ContentLength != 8 || rec.Body != "01234567\n[truncated to 8 bytes]" {
+		t.Fatalf("body = %q len %d", rec.Body, rec.ContentLength)
+	}
+}
+
+func TestOpenWithLimitsTrims(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bins.json")
+	created := time.Now().UTC().Truncate(time.Second)
+	older := created.Add(-time.Minute)
+	payload := persistedFile{Bins: []persistedBin{
+		{
+			ID:      "olderbin",
+			Created: older,
+			Requests: []Request{
+				{ID: "req00001", Method: http.MethodGet, Path: "/old", Body: "old", Headers: []Field{}, Query: []Field{}, Form: []Field{}},
+			},
+		},
+		{
+			ID:      "newerbin",
+			Created: created,
+			Requests: []Request{
+				{ID: "req00002", Method: http.MethodGet, Path: "/a", Body: "a", Headers: []Field{}, Query: []Field{}, Form: []Field{}},
+				{ID: "req00003", Method: http.MethodGet, Path: "/b", Body: "b", Headers: []Field{}, Query: []Field{}, Form: []Field{}},
+			},
+		},
+	}}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := OpenWithLimits(path, time.Hour, Limits{}); err == nil {
+		t.Fatal("expected non-positive limits error")
+	}
+	s, err := OpenWithLimits(path, time.Hour, Limits{MaxBins: 1, MaxRequestsPerBin: 1, MaxBodyBytes: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("olderbin"); ok {
+		t.Fatal("oldest bin was kept")
+	}
+	reqs, ok := s.ListRequests("newerbin")
+	if !ok || len(reqs) != 1 || reqs[0].ID != "req00003" || reqs[0].Body != "b" {
+		t.Fatalf("kept = %#v ok=%v", reqs, ok)
+	}
+	info, err := s.Create("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get("newerbin"); ok {
+		t.Fatal("creating a bin past the cap kept the older bin")
+	}
+	if _, ok := s.Get(info.ID); !ok {
+		t.Fatal("new bin missing")
+	}
+}
+
 func TestList(t *testing.T) {
 	s := NewStore()
 	if got := s.List(); len(got) != 0 {

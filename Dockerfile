@@ -1,6 +1,11 @@
 # Web templates and static files are compiled in via //go:embed all:web.
 # The process listens on :8080 (all interfaces) unless PORT or flags override it,
 # and creates data/bins.json under the working directory.
+# Optional retention and capacity (unset keeps the defaults):
+#   BIN_TTL=48h
+#   MAX_BINS=200
+#   MAX_REQUESTS_PER_BIN=100
+#   MAX_BODY_BYTES=1048576
 FROM golang:1.27.1 AS build
 
 WORKDIR /src

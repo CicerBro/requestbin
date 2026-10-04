@@ -62,6 +62,42 @@ func TestBinTTL(t *testing.T) {
 	}
 }
 
+func TestBinLimits(t *testing.T) {
+	if bin.MaxBins != 200 || bin.MaxRequestsPerBin != 100 || bin.MaxBodyBytes != 1<<20 {
+		t.Fatalf("defaults = %d %d %d", bin.MaxBins, bin.MaxRequestsPerBin, bin.MaxBodyBytes)
+	}
+	t.Setenv("MAX_BINS", "")
+	t.Setenv("MAX_REQUESTS_PER_BIN", "")
+	t.Setenv("MAX_BODY_BYTES", "")
+	limits, err := binLimits()
+	if err != nil || limits != bin.DefaultLimits() {
+		t.Fatalf("defaults = %+v %v", limits, err)
+	}
+
+	t.Setenv("MAX_BINS", "3")
+	t.Setenv("MAX_REQUESTS_PER_BIN", "4")
+	t.Setenv("MAX_BODY_BYTES", "2048")
+	limits, err = binLimits()
+	if err != nil || limits.MaxBins != 3 || limits.MaxRequestsPerBin != 4 || limits.MaxBodyBytes != 2048 {
+		t.Fatalf("override = %+v %v", limits, err)
+	}
+
+	t.Setenv("MAX_BINS", "nope")
+	if _, err := binLimits(); err == nil {
+		t.Fatal("expected invalid MAX_BINS error")
+	}
+	t.Setenv("MAX_BINS", "3")
+	t.Setenv("MAX_REQUESTS_PER_BIN", "0")
+	if _, err := binLimits(); err == nil {
+		t.Fatal("expected non-positive MAX_REQUESTS_PER_BIN error")
+	}
+	t.Setenv("MAX_REQUESTS_PER_BIN", "4")
+	t.Setenv("MAX_BODY_BYTES", "-5")
+	if _, err := binLimits(); err == nil {
+		t.Fatal("expected negative MAX_BODY_BYTES error")
+	}
+}
+
 func TestExpiredBinNotFound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bins.json")
 	raw := []byte(`{"bins":[{"id":"deadbeef","created":"2020-01-01T00:00:00Z","requests":[{"ID":"req12345","Method":"GET","Path":"/","Timestamp":"2020-01-01T00:00:01Z","RemoteAddr":"","ContentType":"","ContentLength":0,"Headers":[],"Query":[],"Body":"secret","Form":[]}]}]}`)

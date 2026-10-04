@@ -42,7 +42,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := bin.Open(binDataFile, ttl)
+	limits, err := binLimits()
+	if err != nil {
+		log.Fatal(err)
+	}
+	store, err := bin.OpenWithLimits(binDataFile, ttl, limits)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -51,7 +55,7 @@ func main() {
 		Handler:           newMux(store),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("requestbin ready on %s (bin ttl %s, data %s)", addr, ttl, binDataFile)
+	log.Printf("requestbin ready on %s (bin ttl %s, max bins %d, requests per bin %d, body %d bytes, data %s)", addr, ttl, limits.MaxBins, limits.MaxRequestsPerBin, limits.MaxBodyBytes, binDataFile)
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -68,6 +72,36 @@ func binTTL() (time.Duration, error) {
 		return 0, fmt.Errorf("BIN_TTL must be positive, got %s", raw)
 	}
 	return d, nil
+}
+
+func binLimits() (bin.Limits, error) {
+	limits := bin.DefaultLimits()
+	var err error
+	if limits.MaxBins, err = positiveIntEnv("MAX_BINS", limits.MaxBins); err != nil {
+		return bin.Limits{}, err
+	}
+	if limits.MaxRequestsPerBin, err = positiveIntEnv("MAX_REQUESTS_PER_BIN", limits.MaxRequestsPerBin); err != nil {
+		return bin.Limits{}, err
+	}
+	if limits.MaxBodyBytes, err = positiveIntEnv("MAX_BODY_BYTES", limits.MaxBodyBytes); err != nil {
+		return bin.Limits{}, err
+	}
+	return limits, nil
+}
+
+func positiveIntEnv(name string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s must be positive, got %s", name, raw)
+	}
+	return n, nil
 }
 
 // cliError is a listen-address mistake. Flag parse failures are already
