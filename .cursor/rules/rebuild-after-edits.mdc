@@ -1,0 +1,11 @@
+---
+description: Rebuild and start requestbin after finishing code edits
+alwaysApply: true
+---
+
+After finishing edits in this repo, rebuild and start the server before ending the turn.
+
+- Run `make` from the repo root. That builds `./requestbin` with `-trimpath` and `-ldflags="-s -w"` so home-directory paths stay out of the binary.
+- Start `./requestbin`. Port 8080 is often taken; if it is, use `PORT=8765 ./requestbin`.
+- If a previous requestbin process from this workspace is still running, stop it first so the new binary is the one listening.
+- Tell the user the URL it is serving.

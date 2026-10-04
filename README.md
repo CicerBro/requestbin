@@ -11,6 +11,14 @@ Create a bin, send any HTTP request to its hook URL, and inspect the method, pat
 Requires Go 1.27.1.
 
 ```sh
+make run
+```
+
+`make` builds `./requestbin` with `-trimpath` and `-ldflags="-s -w"` (the same flags as the Docker image), so the binary does not contain your home directory. `make test` runs the tests.
+
+Or, without writing a binary:
+
+```sh
 go run .
 ```
 
