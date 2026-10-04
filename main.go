@@ -180,6 +180,7 @@ func listenAddrFromEnv(port string) string {
 
 type binView struct {
 	ID         string
+	Name       string
 	Created    string
 	HookURL    string
 	InspectURL string
@@ -187,6 +188,7 @@ type binView struct {
 
 type binSummaryView struct {
 	ID       string
+	Name     string
 	Created  string
 	Requests int
 	Active   bool
@@ -196,6 +198,7 @@ type pageData struct {
 	Shell    bool
 	Bins     []binSummaryView
 	HasBin   bool
+	Locked   bool
 	Bin      binView
 	Requests []bin.Request
 	Groups   []httpbin.Group
@@ -212,18 +215,23 @@ func newMux(store *bin.Store) http.Handler {
 		http.Redirect(w, r, "/bins", http.StatusSeeOther)
 	})
 	mux.HandleFunc("POST /bins", func(w http.ResponseWriter, r *http.Request) {
-		info, err := store.Create()
+		info, err := store.Create(r.FormValue("name"))
 		if err != nil {
+			if errors.Is(err, bin.ErrInvalidName) {
+				http.Error(w, "name must be 40 characters or fewer", http.StatusBadRequest)
+				return
+			}
 			log.Printf("create bin: %v", err)
 			http.Error(w, "could not create bin", http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, "/bins/"+info.ID, http.StatusSeeOther)
+		// The fragment stays in the browser and is not sent back on the next request.
+		http.Redirect(w, r, "/bins/"+info.ID+"#k="+info.Key, http.StatusSeeOther)
 	})
 	mux.HandleFunc("GET /bins", func(w http.ResponseWriter, r *http.Request) {
 		render(w, "bin.html", pageData{
 			Shell: true,
-			Bins:  binSummaries(store, ""),
+			Bins:  binSummaries(store, r, ""),
 		})
 	})
 	mux.HandleFunc("GET /bins/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -233,11 +241,28 @@ func newMux(store *bin.Store) http.Handler {
 			http.Error(w, "bin not found", http.StatusNotFound)
 			return
 		}
+		if err := store.Authorize(id, presentedKey(r, id)); err != nil {
+			if errors.Is(err, bin.ErrNotFound) {
+				http.Error(w, "bin not found", http.StatusNotFound)
+				return
+			}
+			info.Name = ""
+			data := shellData(store, r, info, nil)
+			data.Locked = true
+			data.Bin.Name = ""
+			data.Requests = []bin.Request{}
+			render(w, "bin.html", data)
+			return
+		}
 		reqs, _ := store.ListRequests(id)
 		render(w, "bin.html", shellData(store, r, info, reqs))
 	})
 	mux.HandleFunc("POST /bins/{id}/clear", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		if err := store.Authorize(id, presentedKey(r, id)); err != nil {
+			writeBinAccessError(w, err)
+			return
+		}
 		if err := store.Clear(id); err != nil {
 			if errors.Is(err, bin.ErrNotFound) {
 				http.Error(w, "bin not found", http.StatusNotFound)
@@ -251,6 +276,10 @@ func newMux(store *bin.Store) http.Handler {
 	})
 	mux.HandleFunc("POST /bins/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		if err := store.Authorize(id, presentedKey(r, id)); err != nil {
+			writeBinAccessError(w, err)
+			return
+		}
 		if err := store.Delete(id); err != nil {
 			if errors.Is(err, bin.ErrNotFound) {
 				http.Error(w, "bin not found", http.StatusNotFound)
@@ -262,12 +291,39 @@ func newMux(store *bin.Store) http.Handler {
 		}
 		http.Redirect(w, r, "/bins", http.StatusSeeOther)
 	})
+	mux.HandleFunc("POST /bins/{id}/name", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := store.Authorize(id, presentedKey(r, id)); err != nil {
+			writeBinAccessError(w, err)
+			return
+		}
+		name, err := store.SetName(id, r.PostForm.Get("name"))
+		if err != nil {
+			if errors.Is(err, bin.ErrNotFound) {
+				http.Error(w, "bin not found", http.StatusNotFound)
+				return
+			}
+			if errors.Is(err, bin.ErrInvalidName) {
+				http.Error(w, "name must be 40 characters or fewer", http.StatusBadRequest)
+				return
+			}
+			log.Printf("rename bin %s: %v", id, err)
+			http.Error(w, "could not rename bin", http.StatusInternalServerError)
+			return
+		}
+		if wantsJSON(r) {
+			writeJSON(w, http.StatusOK, nameBody{Name: name})
+			return
+		}
+		http.Redirect(w, r, "/bins/"+id, http.StatusSeeOther)
+	})
 	mux.HandleFunc("GET /api/bins", func(w http.ResponseWriter, r *http.Request) {
-		list := store.List()
+		list := store.ListAuthorized(presentedKeys(r))
 		body := binsBody{Bins: make([]binSummaryJSON, 0, len(list))}
 		for _, item := range list {
 			body.Bins = append(body.Bins, binSummaryJSON{
 				ID:       item.ID,
+				Name:     item.Name,
 				Created:  item.Created.UTC().Format(time.RFC3339),
 				Requests: item.Requests,
 			})
@@ -276,6 +332,10 @@ func newMux(store *bin.Store) http.Handler {
 	})
 	mux.HandleFunc("GET /api/bins/{id}/requests", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
+		if err := store.Authorize(id, presentedKey(r, id)); err != nil {
+			writeBinAccessJSON(w, err)
+			return
+		}
 		reqs, ok := store.ListRequests(id)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, errorBody{Error: "bin not found"})
@@ -288,7 +348,7 @@ func newMux(store *bin.Store) http.Handler {
 	tools := func(w http.ResponseWriter, r *http.Request) {
 		render(w, "tools.html", pageData{
 			Shell:  true,
-			Bins:   binSummaries(store, ""),
+			Bins:   binSummaries(store, r, ""),
 			Groups: toolsGroups(),
 		})
 	}
@@ -301,12 +361,13 @@ func newMux(store *bin.Store) http.Handler {
 	return mux
 }
 
-func binSummaries(store *bin.Store, active string) []binSummaryView {
-	list := store.List()
+func binSummaries(store *bin.Store, r *http.Request, active string) []binSummaryView {
+	list := store.ListAuthorized(presentedKeys(r))
 	out := make([]binSummaryView, 0, len(list))
 	for _, item := range list {
 		out = append(out, binSummaryView{
 			ID:       item.ID,
+			Name:     item.Name,
 			Created:  item.Created.UTC().Format(time.RFC3339),
 			Requests: item.Requests,
 			Active:   item.ID == active,
@@ -322,11 +383,12 @@ func shellData(store *bin.Store, r *http.Request, info bin.Info, reqs []bin.Requ
 	scheme, host := publicSchemeHost(r)
 	return pageData{
 		Shell:    true,
-		Bins:     binSummaries(store, info.ID),
+		Bins:     binSummaries(store, r, info.ID),
 		HasBin:   true,
 		Requests: reqs,
 		Bin: binView{
 			ID:         info.ID,
+			Name:       info.Name,
 			Created:    info.Created.UTC().Format(time.RFC3339),
 			HookURL:    fmt.Sprintf("%s://%s/hooks/%s", scheme, host, info.ID),
 			InspectURL: fmt.Sprintf("%s://%s/bins/%s", scheme, host, info.ID),
@@ -358,8 +420,13 @@ type binsBody struct {
 
 type binSummaryJSON struct {
 	ID       string `json:"id"`
+	Name     string `json:"name,omitempty"`
 	Created  string `json:"created"`
 	Requests int    `json:"requests"`
+}
+
+type nameBody struct {
+	Name string `json:"name"`
 }
 
 type errorBody struct {
@@ -407,6 +474,61 @@ func publicSchemeHost(r *http.Request) (string, string) {
 		host = "localhost"
 	}
 	return scheme, host
+}
+
+func wantsJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
+}
+
+func presentedKeys(r *http.Request) map[string]string {
+	out := make(map[string]string)
+	if raw := strings.TrimSpace(r.Header.Get("X-Bin-Keys")); raw != "" {
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			for id, key := range parsed {
+				id = strings.TrimSpace(id)
+				key = strings.TrimSpace(key)
+				if id != "" && key != "" {
+					out[id] = key
+				}
+			}
+		}
+	}
+	if id := strings.TrimSpace(r.PathValue("id")); id != "" {
+		if key := strings.TrimSpace(r.Header.Get("X-Bin-Key")); key != "" {
+			out[id] = key
+		}
+	}
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			if id := strings.TrimSpace(r.PathValue("id")); id != "" {
+				if key := strings.TrimSpace(r.PostForm.Get("key")); key != "" {
+					out[id] = key
+				}
+			}
+		}
+	}
+	return out
+}
+
+func presentedKey(r *http.Request, id string) string {
+	return presentedKeys(r)[id]
+}
+
+func writeBinAccessError(w http.ResponseWriter, err error) {
+	if errors.Is(err, bin.ErrNotFound) {
+		http.Error(w, "bin not found", http.StatusNotFound)
+		return
+	}
+	http.Error(w, "bin key required", http.StatusForbidden)
+}
+
+func writeBinAccessJSON(w http.ResponseWriter, err error) {
+	if errors.Is(err, bin.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, errorBody{Error: "bin not found"})
+		return
+	}
+	writeJSON(w, http.StatusUnauthorized, errorBody{Error: "bin key required"})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

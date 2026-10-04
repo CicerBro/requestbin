@@ -207,21 +207,7 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("empty bins = %d %s", emptyBins.StatusCode, emptyBody)
 	}
 
-	create, err := http.Post(srv.URL+"/bins", "application/x-www-form-urlencoded", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer create.Body.Close()
-	if create.StatusCode != http.StatusOK {
-		t.Fatalf("create status = %d", create.StatusCode)
-	}
-	if !strings.Contains(create.Request.URL.Path, "/bins/") {
-		t.Fatalf("redirect landed on %s", create.Request.URL.Path)
-	}
-	id := strings.TrimPrefix(create.Request.URL.Path, "/bins/")
-	if len(id) != 8 {
-		t.Fatalf("bin id = %q", id)
-	}
+	id, key := createBin(t, noFollow, srv.URL)
 
 	hookReq, err := http.NewRequest(http.MethodPost, srv.URL+"/hooks/"+id+"/foo?x=1", strings.NewReader(`{"n":1}`))
 	if err != nil {
@@ -259,7 +245,21 @@ func TestRoutes(t *testing.T) {
 	}
 	delRes.Body.Close()
 
-	apiRes, err := http.Get(srv.URL + "/api/bins/" + id + "/requests")
+	lockedAPI, err := http.Get(srv.URL + "/api/bins/" + id + "/requests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedBody := mustRead(t, lockedAPI)
+	if lockedAPI.StatusCode != http.StatusUnauthorized || strings.Contains(lockedBody, `{"n":1}`) || strings.Contains(lockedBody, "alpha") {
+		t.Fatalf("locked api = %d %s", lockedAPI.StatusCode, lockedBody)
+	}
+
+	apiReq, err := http.NewRequest(http.MethodGet, srv.URL+"/api/bins/"+id+"/requests", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiReq.Header.Set("X-Bin-Key", key)
+	apiRes, err := http.DefaultClient.Do(apiReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,9 +294,19 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("query = %#v", older.Query)
 	}
 
+	lockedPage, err := http.Get(srv.URL + "/bins/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedPageBody := mustRead(t, lockedPage)
+	if lockedPage.StatusCode != http.StatusOK || !strings.Contains(lockedPageBody, "Private bin") || strings.Contains(lockedPageBody, "&#34;n&#34;: 1") || strings.Contains(lockedPageBody, `{"n":1}`) {
+		t.Fatalf("locked page = %d %s", lockedPage.StatusCode, lockedPageBody)
+	}
+
 	pageReq, err := http.NewRequest(http.MethodGet, srv.URL+"/bins/"+id, nil)
 	pageReq.Host = "bin.example"
 	pageReq.Header.Set("X-Forwarded-Proto", "https")
+	pageReq.Header.Set("X-Bin-Key", key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,14 +332,23 @@ func TestRoutes(t *testing.T) {
 		t.Fatalf("bin page missing pretty JSON\n%s", pageBody)
 	}
 
-	second, err := http.Post(srv.URL+"/bins", "application/x-www-form-urlencoded", nil)
+	secondID, secondKey := createBin(t, noFollow, srv.URL)
+
+	openList, err := http.Get(srv.URL + "/api/bins")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second.Body.Close()
-	secondID := strings.TrimPrefix(second.Request.URL.Path, "/bins/")
+	openListBody := mustRead(t, openList)
+	if openList.StatusCode != http.StatusOK || strings.Contains(openListBody, id) || strings.Contains(openListBody, secondID) {
+		t.Fatalf("open bins api = %d %s", openList.StatusCode, openListBody)
+	}
 
-	listRes, err := http.Get(srv.URL + "/api/bins")
+	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/api/bins", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("X-Bin-Keys", `{"`+id+`":"`+key+`","`+secondID+`":"`+secondKey+`"}`)
+	listRes, err := http.DefaultClient.Do(listReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,8 +377,22 @@ func TestRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	binsPageBody := mustRead(t, binsPage)
-	if binsPage.StatusCode != http.StatusOK || !strings.Contains(binsPageBody, id) || !strings.Contains(binsPageBody, secondID) {
-		t.Fatalf("bins page = %d %s", binsPage.StatusCode, binsPageBody)
+	if binsPage.StatusCode != http.StatusOK || strings.Contains(binsPageBody, id) || strings.Contains(binsPageBody, secondID) {
+		t.Fatalf("bins page leaked ids = %d %s", binsPage.StatusCode, binsPageBody)
+	}
+
+	ownedReq, err := http.NewRequest(http.MethodGet, srv.URL+"/bins", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedReq.Header.Set("X-Bin-Keys", `{"`+id+`":"`+key+`","`+secondID+`":"`+secondKey+`"}`)
+	ownedPage, err := http.DefaultClient.Do(ownedReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownedBody := mustRead(t, ownedPage)
+	if ownedPage.StatusCode != http.StatusOK || !strings.Contains(ownedBody, id) || !strings.Contains(ownedBody, secondID) {
+		t.Fatalf("owned bins page = %d %s", ownedPage.StatusCode, ownedBody)
 	}
 
 	missing, err := http.Get(srv.URL + "/api/bins/deadbeef/requests")
@@ -509,12 +542,7 @@ func TestClearAndDeleteBin(t *testing.T) {
 		return http.ErrUseLastResponse
 	}}
 
-	create, err := http.Post(srv.URL+"/bins", "application/x-www-form-urlencoded", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	create.Body.Close()
-	id := strings.TrimPrefix(create.Request.URL.Path, "/bins/")
+	id, key := createBin(t, noFollow, srv.URL)
 
 	hook, err := http.Post(srv.URL+"/hooks/"+id, "text/plain", strings.NewReader("hello"))
 	if err != nil {
@@ -522,7 +550,16 @@ func TestClearAndDeleteBin(t *testing.T) {
 	}
 	hook.Body.Close()
 
-	clearRes, err := noFollow.Post(srv.URL+"/bins/"+id+"/clear", "application/x-www-form-urlencoded", nil)
+	denied, err := noFollow.Post(srv.URL+"/bins/"+id+"/clear", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("clear without key = %d", denied.StatusCode)
+	}
+
+	clearRes, err := noFollow.Post(srv.URL+"/bins/"+id+"/clear", "application/x-www-form-urlencoded", strings.NewReader("key="+key))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +567,12 @@ func TestClearAndDeleteBin(t *testing.T) {
 	if clearRes.StatusCode != http.StatusSeeOther || clearRes.Header.Get("Location") != "/bins/"+id {
 		t.Fatalf("clear = %d %s", clearRes.StatusCode, clearRes.Header.Get("Location"))
 	}
-	api, err := http.Get(srv.URL + "/api/bins/" + id + "/requests")
+	apiReq, err := http.NewRequest(http.MethodGet, srv.URL+"/api/bins/"+id+"/requests", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiReq.Header.Set("X-Bin-Key", key)
+	api, err := http.DefaultClient.Do(apiReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -539,7 +581,7 @@ func TestClearAndDeleteBin(t *testing.T) {
 		t.Fatalf("cleared = %d %s", api.StatusCode, apiBody)
 	}
 
-	delRes, err := noFollow.Post(srv.URL+"/bins/"+id+"/delete", "application/x-www-form-urlencoded", nil)
+	delRes, err := noFollow.Post(srv.URL+"/bins/"+id+"/delete", "application/x-www-form-urlencoded", strings.NewReader("key="+key))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,6 +605,117 @@ func TestClearAndDeleteBin(t *testing.T) {
 	if missing.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing clear = %d", missing.StatusCode)
 	}
+}
+
+func TestBinName(t *testing.T) {
+	srv := httptest.NewServer(newMux(bin.NewStore()))
+	defer srv.Close()
+	noFollow := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	create, err := noFollow.Post(srv.URL+"/bins", "application/x-www-form-urlencoded", strings.NewReader("name=Stripe+webhooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := create.Header.Get("Location")
+	create.Body.Close()
+	if create.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create = %d %s", create.StatusCode, loc)
+	}
+	path, frag, _ := strings.Cut(loc, "#")
+	id := strings.TrimPrefix(path, "/bins/")
+	key := strings.TrimPrefix(frag, "k=")
+
+	locked, err := http.Get(srv.URL + "/bins/" + id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockedBody := mustRead(t, locked)
+	if strings.Contains(lockedBody, "Stripe webhooks") {
+		t.Fatalf("locked page includes the name\n%s", lockedBody)
+	}
+
+	pageReq, err := http.NewRequest(http.MethodGet, srv.URL+"/bins/"+id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageReq.Header.Set("X-Bin-Key", key)
+	page, err := http.DefaultClient.Do(pageReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageBody := mustRead(t, page)
+	if page.StatusCode != http.StatusOK || !strings.Contains(pageBody, "Stripe webhooks") || !strings.Contains(pageBody, `placeholder="Name this bin"`) {
+		t.Fatalf("named page = %d %s", page.StatusCode, pageBody)
+	}
+
+	denied, err := noFollow.Post(srv.URL+"/bins/"+id+"/name", "application/x-www-form-urlencoded", strings.NewReader("name=Other"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied.Body.Close()
+	if denied.StatusCode != http.StatusForbidden {
+		t.Fatalf("rename without key = %d", denied.StatusCode)
+	}
+
+	renameReq, err := http.NewRequest(http.MethodPost, srv.URL+"/bins/"+id+"/name", strings.NewReader("key="+key+"&name=Billing+hooks"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	renameReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	renameReq.Header.Set("Accept", "application/json")
+	rename, err := http.DefaultClient.Do(renameReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renameBody := mustRead(t, rename)
+	if rename.StatusCode != http.StatusOK || !strings.Contains(renameBody, `"name":"Billing hooks"`) {
+		t.Fatalf("rename = %d %s", rename.StatusCode, renameBody)
+	}
+
+	listReq, err := http.NewRequest(http.MethodGet, srv.URL+"/api/bins", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listReq.Header.Set("X-Bin-Keys", `{"`+id+`":"`+key+`"}`)
+	list, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listBody := mustRead(t, list)
+	if !strings.Contains(listBody, `"name":"Billing hooks"`) || !strings.Contains(listBody, id) {
+		t.Fatalf("list = %s", listBody)
+	}
+
+	long, err := noFollow.Post(srv.URL+"/bins/"+id+"/name", "application/x-www-form-urlencoded", strings.NewReader("key="+key+"&name="+strings.Repeat("a", 41)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	long.Body.Close()
+	if long.StatusCode != http.StatusBadRequest {
+		t.Fatalf("long name = %d", long.StatusCode)
+	}
+}
+
+func createBin(t *testing.T, client *http.Client, srvURL string) (id, key string) {
+	t.Helper()
+	res, err := client.Post(srvURL+"/bins", "application/x-www-form-urlencoded", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	loc := res.Header.Get("Location")
+	if res.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create = %d location %q", res.StatusCode, loc)
+	}
+	path, frag, ok := strings.Cut(loc, "#")
+	id = strings.TrimPrefix(path, "/bins/")
+	key = strings.TrimPrefix(frag, "k=")
+	if !ok || len(id) != 8 || len(key) != 32 {
+		t.Fatalf("location %q", loc)
+	}
+	return id, key
 }
 
 func valuesNamed(fields []bin.Field, name string) []string {

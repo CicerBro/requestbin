@@ -1,4 +1,4 @@
-{{define "title"}}{{if .HasBin}}Bin {{.Bin.ID}} · RequestBin{{else}}Bins · RequestBin{{end}}{{end}}
+{{define "title"}}{{if .HasBin}}{{if .Bin.Name}}{{.Bin.Name}}{{else}}Bin {{.Bin.ID}}{{end}} · RequestBin{{else}}Bins · RequestBin{{end}}{{end}}
 {{define "content"}}
 {{if not .HasBin}}
 <div class="crumbbar">
@@ -10,19 +10,21 @@
   <div class="empty-orb" aria-hidden="true">
     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
   </div>
-  {{if .Bins}}
-  <h1>Select a bin</h1>
-  <p>Choose a bin in the sidebar to inspect captured requests.</p>
-  {{else}}
-  <h1>No bins yet</h1>
-  <p>Create a bin to get a URL. Any HTTP request sent to it is captured here.</p>
-  <form method="post" action="/bins">
-    <button class="new-bin" type="submit">+ New bin</button>
-  </form>
-  {{end}}
+  <div class="unselected-empty">
+    <h1>No bins yet</h1>
+    <p>Create a bin to get a URL. Any HTTP request sent to it is captured here.</p>
+    <form class="new-bin-form" method="post" action="/bins">
+      <input class="new-bin-name" name="name" maxlength="40" placeholder="Name (optional)" aria-label="Bin name" autocomplete="off">
+      <button class="new-bin" type="submit">+ New bin</button>
+    </form>
+  </div>
+  <div class="unselected-pick">
+    <h1>Select a bin</h1>
+    <p>Choose a bin in the sidebar to inspect captured requests.</p>
+  </div>
 </div>
 {{else}}
-<div class="inspector" data-bin-id="{{.Bin.ID}}" data-hook-url="{{.Bin.HookURL}}" data-inspect-url="{{.Bin.InspectURL}}" data-created="{{.Bin.Created}}">
+<div class="inspector" data-bin-id="{{.Bin.ID}}" data-hook-url="{{.Bin.HookURL}}" data-inspect-url="{{.Bin.InspectURL}}" data-created="{{.Bin.Created}}"{{if .Locked}} data-locked="true"{{end}}>
   <div class="insp-top">
     <div class="insp-id">
       <a class="back-link" href="/bins" aria-label="Back to bins">
@@ -33,7 +35,10 @@
         <span class="crumb-sep" aria-hidden="true">/</span>
         <span class="crumb-group">local</span>
         <span class="crumb-sep" aria-hidden="true">/</span>
-        <span class="crumb-current">{{.Bin.ID}}</span>
+        <span class="crumb-current" id="bin-crumb">{{if .Bin.Name}}{{.Bin.Name}}{{else}}{{.Bin.ID}}{{end}}</span>
+        <form class="bin-name-form" method="post" action="/bins/{{.Bin.ID}}/name">
+          <input id="bin-name" name="name" maxlength="40" value="{{.Bin.Name}}" data-saved="{{.Bin.Name}}" placeholder="Name this bin" aria-label="Display name" autocomplete="off" spellcheck="false">
+        </form>
       </nav>
       <span class="bin-kicker">Bin</span>
       <code class="bin-id-mono">{{.Bin.ID}}</code>
@@ -51,6 +56,10 @@
         <button class="btn btn-delete" type="submit">Delete</button>
       </form>
     </div>
+  </div>
+  <div class="bin-lock" id="bin-lock">
+    <h2>Private bin</h2>
+    <p>This browser doesn't have the key for this bin.</p>
   </div>
   <div class="hookbar">
     <code id="hook-url">{{.Bin.HookURL}}</code>
@@ -156,18 +165,29 @@
           {{else}}<p class="none">No form fields.</p>{{end}}
         </section>
         <section class="req-card">
+          {{$respBody := hookBody $.Bin.ID $req.ID}}
+          {{$respPretty := prettyJSON "application/json" $respBody}}
+          {{$respHead := hookHead}}
+          <input class="view-input" type="radio" name="resp-view-{{$i}}" id="resp-view-{{$i}}-raw" value="raw">
+          <input class="view-input" type="radio" name="resp-view-{{$i}}" id="resp-view-{{$i}}-pretty" value="pretty" checked>
           <header class="card-head">
             <h2>
               <svg class="card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
               Response
               <span class="http-tag">HTTP</span>
             </h2>
-            <span class="msg-stat">{{hookStat $.Bin.ID $req.ID}}</span>
-            <button class="icon-btn" type="button" data-copy-target="resp-{{$i}}" data-label="Copy response" aria-label="Copy response">
+            <span class="msg-stat stat-raw">{{statLabel (printf "%s%s" $respHead $respBody)}}</span>
+            <span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $respHead $respPretty)}}</span>
+            <div class="view-toggle" role="group" aria-label="Response body format">
+              <label for="resp-view-{{$i}}-raw">Raw</label>
+              <label for="resp-view-{{$i}}-pretty">Pretty JSON</label>
+            </div>
+            <button class="icon-btn" type="button" data-copy-visible aria-label="Copy response">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
           </header>
-          <pre class="msg" id="resp-{{$i}}"><span class="msg-lead">{{hookHead}}</span><span class="json">{{hookBody $.Bin.ID $req.ID}}</span></pre>
+          <pre class="msg view-raw">{{printf "%s%s" $respHead $respBody}}</pre>
+          <pre class="msg view-pretty"><span class="msg-lead">{{$respHead}}</span><span class="json">{{$respPretty}}</span></pre>
         </section>
       </article>
       {{end}}
@@ -176,8 +196,8 @@
   {{if .Requests}}
   <style id="sel-style">
     {{range $i, $req := .Requests}}
-    #sel-{{$i}}:checked ~ .split label[for="sel-{{$i}}"] { background: #e7f0ff; }
-    #sel-{{$i}}:focus-visible ~ .split label[for="sel-{{$i}}"] { outline: 2px solid #2563eb; outline-offset: -2px; }
+    #sel-{{$i}}:checked ~ .split label[for="sel-{{$i}}"] { background: var(--bg-selected); }
+    #sel-{{$i}}:focus-visible ~ .split label[for="sel-{{$i}}"] { outline: 2px solid var(--blue-600); outline-offset: -2px; }
     #sel-{{$i}}:checked ~ .split #pane-{{$i}} { display: flex; }
     {{end}}
   </style>

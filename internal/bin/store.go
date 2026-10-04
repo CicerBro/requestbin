@@ -7,6 +7,7 @@ package bin
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,8 +15,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -27,10 +31,18 @@ const (
 	MaxBodyBytes = 1 << 20
 	// DefaultTTL is how long a bin is kept after it is created.
 	DefaultTTL = 48 * time.Hour
+	// MaxNameRunes is the longest display name a bin can have.
+	MaxNameRunes = 40
 )
 
-// ErrNotFound is returned when a bin id does not exist.
-var ErrNotFound = errors.New("bin not found")
+var (
+	// ErrNotFound is returned when a bin id does not exist.
+	ErrNotFound = errors.New("bin not found")
+	// ErrForbidden is returned when a bin key does not match.
+	ErrForbidden = errors.New("bin key rejected")
+	// ErrInvalidName is returned when a display name is too long or has control characters.
+	ErrInvalidName = errors.New("invalid bin name")
+)
 
 // Field is one header, query parameter, or form field.
 // Duplicate names are preserved as separate entries.
@@ -54,15 +66,19 @@ type Request struct {
 	Form          []Field `json:"Form"`
 }
 
-// Info identifies a bin.
+// Info identifies a bin. Key is set only by Create; it is the secret
+// handed to the browser that made the bin.
 type Info struct {
 	ID      string
+	Name    string
 	Created time.Time
+	Key     string
 }
 
 // Summary is a bin plus how many requests it currently holds.
 type Summary struct {
 	ID       string
+	Name     string
 	Created  time.Time
 	Requests int
 }
@@ -85,12 +101,16 @@ type persistedFile struct {
 
 type persistedBin struct {
 	ID       string    `json:"id"`
+	Key      string    `json:"key,omitempty"`
+	Name     string    `json:"name,omitempty"`
 	Created  time.Time `json:"created"`
 	Requests []Request `json:"requests"`
 }
 
 type storedBin struct {
 	id       string
+	key      string
+	name     string
 	created  time.Time
 	requests []Request // oldest first
 }
@@ -121,8 +141,13 @@ func Open(path string, ttl time.Duration) (*Store, error) {
 	return s, nil
 }
 
-// Create allocates a new bin id (8 lowercase hex characters).
-func (s *Store) Create() (Info, error) {
+// Create allocates a new bin id (8 lowercase hex characters) and a secret key.
+// name may be empty. It is trimmed and limited to MaxNameRunes.
+func (s *Store) Create(name string) (Info, error) {
+	cleaned, err := CleanName(name)
+	if err != nil {
+		return Info{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.sweepLocked(); err != nil {
@@ -137,7 +162,11 @@ func (s *Store) Create() (Info, error) {
 		if _, exists := s.bins[id]; exists {
 			continue
 		}
-		b := &storedBin{id: id, created: s.clock().UTC()}
+		key, err := newKey()
+		if err != nil {
+			return Info{}, err
+		}
+		b := &storedBin{id: id, key: key, name: cleaned, created: s.clock().UTC()}
 		s.bins[id] = b
 		s.order = append(s.order, id)
 		s.evictBinsLocked()
@@ -148,12 +177,50 @@ func (s *Store) Create() (Info, error) {
 			delete(s.bins, id)
 			return Info{}, err
 		}
-		return Info{ID: b.id, Created: b.created}, nil
+		return Info{ID: b.id, Name: b.name, Created: b.created, Key: key}, nil
 	}
 	return Info{}, errors.New("allocate bin id")
 }
 
+// Authorize reports whether key belongs to id.
+func (s *Store) Authorize(id, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.sweepLocked(); err != nil {
+		return err
+	}
+	b, ok := s.bins[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if !keyMatch(b.key, key) {
+		return ErrForbidden
+	}
+	return nil
+}
+
+// ListAuthorized returns bins whose keys match, newest first.
+// Keys for unknown ids are ignored. Bins with no matching key are omitted.
+func (s *Store) ListAuthorized(keys map[string]string) []Summary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_ = s.sweepLocked()
+	out := make([]Summary, 0, len(keys))
+	for i := len(s.order) - 1; i >= 0; i-- {
+		b := s.bins[s.order[i]]
+		if b == nil {
+			continue
+		}
+		if !keyMatch(b.key, keys[b.id]) {
+			continue
+		}
+		out = append(out, Summary{ID: b.id, Name: b.name, Created: b.created, Requests: len(b.requests)})
+	}
+	return out
+}
+
 // List returns every bin, newest first, with its current request count.
+// HTTP handlers must use ListAuthorized so a visitor only sees bins they hold keys for.
 func (s *Store) List() []Summary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -164,12 +231,12 @@ func (s *Store) List() []Summary {
 		if b == nil {
 			continue
 		}
-		out = append(out, Summary{ID: b.id, Created: b.created, Requests: len(b.requests)})
+		out = append(out, Summary{ID: b.id, Name: b.name, Created: b.created, Requests: len(b.requests)})
 	}
 	return out
 }
 
-// Get returns a bin if it exists.
+// Get returns a bin if it exists. The key is not included.
 func (s *Store) Get(id string) (Info, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -178,7 +245,52 @@ func (s *Store) Get(id string) (Info, bool) {
 	if !ok {
 		return Info{}, false
 	}
-	return Info{ID: b.id, Created: b.created}, true
+	return Info{ID: b.id, Name: b.name, Created: b.created}, true
+}
+
+// SetName changes the display name. An empty name clears it.
+// The caller must already have authorized the key.
+func (s *Store) SetName(id, name string) (string, error) {
+	cleaned, err := CleanName(name)
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.sweepLocked(); err != nil {
+		return "", err
+	}
+	b, ok := s.bins[id]
+	if !ok {
+		return "", ErrNotFound
+	}
+	if b.name == cleaned {
+		return cleaned, nil
+	}
+	prev := b.name
+	b.name = cleaned
+	if err := s.saveLocked(); err != nil {
+		b.name = prev
+		return "", err
+	}
+	return cleaned, nil
+}
+
+// CleanName trims a display name. Empty is valid and means unnamed.
+func CleanName(name string) (string, error) {
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" {
+		return "", nil
+	}
+	if utf8.RuneCountInString(name) > MaxNameRunes {
+		return "", ErrInvalidName
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return "", ErrInvalidName
+		}
+	}
+	return name, nil
 }
 
 // ListRequests returns captured requests newest-first.
@@ -355,7 +467,16 @@ func (s *Store) load() error {
 		for i := range reqs {
 			reqs[i] = normalizeRequest(reqs[i])
 		}
-		b := &storedBin{id: item.ID, created: item.Created.UTC(), requests: reqs}
+		key := item.Key
+		if key == "" {
+			var err error
+			key, err = newKey()
+			if err != nil {
+				return err
+			}
+			dirty = true
+		}
+		b := &storedBin{id: item.ID, key: key, name: strings.TrimSpace(item.Name), created: item.Created.UTC(), requests: reqs}
 		if s.expiredLocked(b) {
 			dirty = true
 			continue
@@ -391,6 +512,8 @@ func (s *Store) saveLocked() error {
 		}
 		payload.Bins = append(payload.Bins, persistedBin{
 			ID:       b.id,
+			Key:      b.key,
+			Name:     b.name,
 			Created:  b.created.UTC(),
 			Requests: reqs,
 		})
@@ -448,4 +571,19 @@ func newID() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf[:]), nil
+}
+
+func newKey() (string, error) {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf[:]), nil
+}
+
+func keyMatch(stored, given string) bool {
+	if stored == "" || len(stored) != len(given) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(stored), []byte(given)) == 1
 }

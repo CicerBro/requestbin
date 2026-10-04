@@ -22,12 +22,21 @@ func TestCreate(t *testing.T) {
 	}
 
 	s := NewStore()
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(info.ID) != 8 || !isHex(info.ID) {
 		t.Fatalf("id = %q, want 8 hex chars", info.ID)
+	}
+	if len(info.Key) != 32 || !isHex(info.Key) || info.Key == info.ID {
+		t.Fatalf("key = %q", info.Key)
+	}
+	if err := s.Authorize(info.ID, info.Key); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Authorize(info.ID, "00000000000000000000000000000000"); err != ErrForbidden {
+		t.Fatalf("wrong key = %v", err)
 	}
 	if time.Since(info.Created) > time.Minute || info.Created.Location() != time.UTC {
 		t.Fatalf("created = %v", info.Created)
@@ -42,7 +51,7 @@ func TestCreate(t *testing.T) {
 		t.Fatalf("requests = %#v ok=%v", reqs, ok)
 	}
 
-	other, err := s.Create()
+	other, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +62,7 @@ func TestCreate(t *testing.T) {
 
 func TestCapture(t *testing.T) {
 	s := NewStore()
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +195,7 @@ func TestCapture(t *testing.T) {
 func TestCaptureOrder(t *testing.T) {
 	s := NewStore()
 	s.maxReqs = 2
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +225,7 @@ func TestCaptureOrder(t *testing.T) {
 
 func TestBodyLimit(t *testing.T) {
 	s := NewStore()
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,12 +254,12 @@ func TestList(t *testing.T) {
 	if got := s.List(); len(got) != 0 {
 		t.Fatalf("empty list = %#v", got)
 	}
-	first, err := s.Create()
+	first, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	capture(t, s, first.ID, http.MethodPost, "/hooks/"+first.ID, "text/plain", []byte("hi"))
-	second, err := s.Create()
+	second, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,15 +295,15 @@ func TestUnknownBin(t *testing.T) {
 func TestEvictOldestBin(t *testing.T) {
 	s := NewStore()
 	s.maxBins = 2
-	first, err := s.Create()
+	first, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.Create()
+	second, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	third, err := s.Create()
+	third, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +320,7 @@ func TestEvictOldestBin(t *testing.T) {
 
 func TestConcurrentCapture(t *testing.T) {
 	s := NewStore()
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +349,7 @@ func TestReloadFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,8 +360,17 @@ func TestReloadFromDisk(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, ok := s2.Get(info.ID)
-	if !ok || got.ID != info.ID || !got.Created.Equal(info.Created) {
+	if !ok || got.ID != info.ID || !got.Created.Equal(info.Created) || got.Key != "" {
 		t.Fatalf("reloaded = %+v ok=%v", got, ok)
+	}
+	if err := s2.Authorize(info.ID, info.Key); err != nil {
+		t.Fatal(err)
+	}
+	if s2.ListAuthorized(map[string]string{info.ID: "nope"}) != nil && len(s2.ListAuthorized(map[string]string{info.ID: "nope"})) != 0 {
+		t.Fatal("wrong key listed the bin")
+	}
+	if got := s2.ListAuthorized(map[string]string{info.ID: info.Key}); len(got) != 1 || got[0].ID != info.ID {
+		t.Fatalf("authorized = %+v", got)
 	}
 	reqs, ok := s2.ListRequests(info.ID)
 	if !ok || len(reqs) != 1 {
@@ -379,7 +397,7 @@ func TestExpiry(t *testing.T) {
 	start := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return start }
 
-	info, err := s.Create()
+	info, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,11 +504,11 @@ func TestClearAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, err := s.Create()
+	first, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := s.Create()
+	second, err := s.Create("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,6 +561,34 @@ func TestClearAndDelete(t *testing.T) {
 	}
 	if err := s.Delete("missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete missing = %v", err)
+	}
+}
+
+func TestBinDisplayName(t *testing.T) {
+	s := NewStore()
+	info, err := s.Create("  Stripe   webhooks ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "Stripe webhooks" {
+		t.Fatalf("name = %q", info.Name)
+	}
+	got, ok := s.Get(info.ID)
+	if !ok || got.Name != "Stripe webhooks" || got.Key != "" {
+		t.Fatalf("get = %+v ok=%v", got, ok)
+	}
+	if _, err := s.Create(strings.Repeat("a", MaxNameRunes+1)); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("long name = %v", err)
+	}
+	if _, err := s.SetName(info.ID, "bad\x00name"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("control name = %v", err)
+	}
+	cleared, err := s.SetName(info.ID, "   ")
+	if err != nil || cleared != "" {
+		t.Fatalf("clear name = %q %v", cleared, err)
+	}
+	if got, _ := s.Get(info.ID); got.Name != "" {
+		t.Fatalf("cleared = %q", got.Name)
 	}
 }
 

@@ -169,6 +169,11 @@
     return goEscape(JSON.stringify({ ok: true, bin: binId, request: reqId })) + "\n";
   }
 
+  function prettyHookBody(binId, reqId) {
+    var pretty = prettyJSONText("application/json", JSON.stringify({ ok: true, bin: binId, request: reqId }));
+    return pretty || hookBody(binId, reqId);
+  }
+
   function colorJSON(root) {
     if (typeof highlightJSON !== "function") return;
     (root || document).querySelectorAll("span.json").forEach(function (el) {
@@ -201,7 +206,7 @@
     return id == null || id === "" ? "i" + index : String(id);
   }
 
-  function renderRequests(inspector, reqs, selectedId, selectedView) {
+  function renderRequests(inspector, reqs, selectedId, selectedView, respView) {
     var list = document.getElementById("req-list");
     var slot = document.getElementById("detail-slot");
     var empty = document.getElementById("empty-detail");
@@ -211,6 +216,7 @@
     var split = inspector.querySelector(".split");
     if (!list || !slot || !split) throw new Error("missing inspector nodes");
     if (selectedView !== "raw") selectedView = "pretty";
+    if (respView !== "raw") respView = "pretty";
 
     inspector.querySelectorAll("input.sel").forEach(function (el) { el.remove(); });
     var oldStyle = document.getElementById("sel-style");
@@ -263,14 +269,17 @@
       var pretty = prettyJSONText(ctype, body);
       var showPretty = !!pretty && !(i === selIndex && selectedView === "raw");
       var respBody = hookBody(binId, reqId);
+      var respPretty = prettyHookBody(binId, reqId);
       var resp = HOOK_HEAD + respBody;
+      var respPrettyMsg = HOOK_HEAD + respPretty;
+      var showRespPretty = !(i === selIndex && respView === "raw");
 
       radios.push(
         '<input class="sel" type="radio" name="selected-request" id="sel-' + i +
         '" data-id="' + esc(reqKey(req, i)) + '"' + (i === selIndex ? " checked" : "") + ">"
       );
-      rules.push('#sel-' + i + ':checked ~ .split label[for="sel-' + i + '"]{background:#e7f0ff}');
-      rules.push('#sel-' + i + ':focus-visible ~ .split label[for="sel-' + i + '"]{outline:2px solid #2563eb;outline-offset:-2px}');
+      rules.push('#sel-' + i + ':checked ~ .split label[for="sel-' + i + '"]{background:var(--bg-selected)}');
+      rules.push('#sel-' + i + ':focus-visible ~ .split label[for="sel-' + i + '"]{outline:2px solid var(--blue-600);outline-offset:-2px}');
       rules.push("#sel-" + i + ":checked ~ .split #pane-" + i + "{display:flex}");
       labels.push(
         '<label class="req-row" for="sel-' + i + '" title="' + esc(method + " " + path) + '">' +
@@ -313,10 +322,18 @@
         table(query, "No query parameters.") +
         '<h3>Form <span class="kv-n">' + form.length + "</span></h3>" +
         table(form, "No form fields.") + "</section>" +
-        '<section class="req-card"><header class="card-head"><h2>' + ICON_DOC + 'Response <span class="http-tag">HTTP</span></h2>' +
-        '<span class="msg-stat">' + esc(statLabel(resp)) + "</span>" +
-        '<button class="icon-btn" type="button" data-copy-target="resp-' + i + '" data-label="Copy response" aria-label="Copy response">' + ICON_COPY + "</button></header>" +
-        '<pre class="msg" id="resp-' + i + '"><span class="msg-lead">' + esc(HOOK_HEAD) + '</span><span class="json">' + esc(respBody) + "</span></pre></section></article>"
+        '<section class="req-card">' +
+        '<input class="view-input" type="radio" name="resp-view-' + i + '" id="resp-view-' + i + '-raw" value="raw"' + (showRespPretty ? "" : " checked") + ">" +
+        '<input class="view-input" type="radio" name="resp-view-' + i + '" id="resp-view-' + i + '-pretty" value="pretty"' + (showRespPretty ? " checked" : "") + ">" +
+        '<header class="card-head"><h2>' + ICON_DOC + 'Response <span class="http-tag">HTTP</span></h2>' +
+        '<span class="msg-stat stat-raw">' + esc(statLabel(resp)) + "</span>" +
+        '<span class="msg-stat stat-pretty">' + esc(statLabel(respPrettyMsg)) + "</span>" +
+        '<div class="view-toggle" role="group" aria-label="Response body format">' +
+        '<label for="resp-view-' + i + '-raw">Raw</label>' +
+        '<label for="resp-view-' + i + '-pretty">Pretty JSON</label></div>' +
+        '<button class="icon-btn" type="button" data-copy-visible aria-label="Copy response">' + ICON_COPY + "</button></header>" +
+        '<pre class="msg view-raw">' + esc(resp) + "</pre>" +
+        '<pre class="msg view-pretty"><span class="msg-lead">' + esc(HOOK_HEAD) + '</span><span class="json">' + esc(respPretty) + "</span></pre></section></article>"
       );
     });
 
@@ -334,12 +351,16 @@
     var checked = inspector.querySelector("input.sel:checked");
     var id = checked ? checked.getAttribute("data-id") : "";
     var view = "pretty";
+    var respView = "pretty";
     if (checked) {
       var pane = document.getElementById(checked.id.replace("sel-", "pane-"));
-      var viewInput = pane && pane.querySelector("input.view-input:checked");
-      if (viewInput) view = viewInput.value;
+      var cards = pane ? pane.querySelectorAll(".req-card") : [];
+      var reqInput = cards[0] && cards[0].querySelector("input.view-input:checked");
+      var respInput = cards[1] && cards[1].querySelector("input.view-input:checked");
+      if (reqInput) view = reqInput.value;
+      if (respInput) respView = respInput.value;
     }
-    return { id: id || "", view: view };
+    return { id: id || "", view: view, respView: respView };
   }
 
   function markNav() {
@@ -424,13 +445,39 @@
     document.addEventListener("submit", function (event) {
       var form = event.target;
       if (!form || !form.getAttribute) return;
+      var action = form.getAttribute("action") || "";
+      var nameMatch = action.match(/^\/bins\/([^/]+)\/name$/);
+      if (nameMatch) {
+        event.preventDefault();
+        saveBinName(form, decodeURIComponent(nameMatch[1]));
+        return;
+      }
       var msg = form.getAttribute("data-confirm");
       if (!msg) return;
-      if (!window.confirm(msg)) event.preventDefault();
+      if (!window.confirm(msg)) {
+        event.preventDefault();
+        return;
+      }
+      var action = form.getAttribute("action") || "";
+      var binMatch = action.match(/^\/bins\/([^/]+)\/(?:clear|delete)$/);
+      if (!binMatch) return;
+      var ownedKey = binKey(decodeURIComponent(binMatch[1]));
+      if (!ownedKey) {
+        event.preventDefault();
+        return;
+      }
+      var input = form.querySelector('input[name="key"]');
+      if (!input) {
+        input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "key";
+        form.appendChild(input);
+      }
+      input.value = ownedKey;
     });
   }
 
-  var BIN_KEY = "requestbin.bins";
+  var KEYS_KEY = "requestbin.binKeys";
   var POLL_MS = 10000;
 
   function activeBinId() {
@@ -442,117 +489,143 @@
     return String((bin && (bin.id || bin.ID)) || "");
   }
 
-  function readStoredBins() {
+  function readBinKeys() {
     try {
-      var raw = localStorage.getItem(BIN_KEY);
-      if (raw == null) return { missing: true, ids: [] };
+      var raw = localStorage.getItem(KEYS_KEY);
+      if (!raw) return {};
       var parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return { missing: true, ids: [] };
-      var ids = [];
-      var seen = {};
-      parsed.forEach(function (id) {
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      var out = {};
+      Object.keys(parsed).forEach(function (id) {
+        var key = String(parsed[id] || "");
         id = String(id || "");
-        if (!id || seen[id]) return;
-        seen[id] = true;
-        ids.push(id);
+        if (!id || !key) return;
+        out[id] = key;
       });
-      return { missing: false, ids: ids };
+      return out;
     } catch (e) {
-      return { broken: true, missing: false, ids: [] };
+      return {};
     }
   }
 
-  function sameIds(a, b) {
-    if (a.length !== b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] !== b[i]) return false;
-    }
-    return true;
-  }
-
-  function writeStoredBins(ids) {
-    var seen = {};
-    var out = [];
-    ids.forEach(function (id) {
-      id = String(id || "");
-      if (!id || seen[id]) return;
-      seen[id] = true;
-      out.push(id);
-    });
+  function writeBinKeys(keys) {
     try {
-      localStorage.setItem(BIN_KEY, JSON.stringify(out));
+      localStorage.setItem(KEYS_KEY, JSON.stringify(keys));
+      localStorage.removeItem("requestbin.bins");
       return true;
     } catch (e) {
       return false;
     }
   }
 
-  function rememberBin(id) {
-    if (!id) return;
-    var stored = readStoredBins();
-    if (stored.missing || stored.broken || stored.ids.indexOf(id) !== -1) return;
-    stored.ids.unshift(id);
-    writeStoredBins(stored.ids);
+  function binKey(id) {
+    if (!id) return "";
+    return readBinKeys()[id] || "";
+  }
+
+  function saveBinKey(id, key) {
+    if (!id || !key) return;
+    var keys = readBinKeys();
+    if (keys[id] === key) return;
+    keys[id] = key;
+    writeBinKeys(keys);
   }
 
   function forgetBin(id) {
-    var stored = readStoredBins();
-    if (stored.missing || stored.broken) return;
-    var next = stored.ids.filter(function (item) { return item !== id; });
-    if (next.length === stored.ids.length) return;
-    writeStoredBins(next);
+    var keys = readBinKeys();
+    if (!keys[id]) return;
+    delete keys[id];
+    writeBinKeys(keys);
   }
 
-  // Bins this browser knows about that the server still has.
-  // An empty localStorage on first visit is seeded from the server list.
-  function binsForBrowser(serverBins) {
-    var stored = readStoredBins();
-    if (stored.broken) return serverBins;
-    var ids = stored.ids.slice();
-    if (stored.missing) {
-      ids = serverBins.map(binID).filter(Boolean);
-    }
-    var active = activeBinId();
-    if (active) {
-      var onServer = serverBins.some(function (bin) { return binID(bin) === active; });
-      if (onServer && ids.indexOf(active) === -1) ids.push(active);
-    }
-    var keep = {};
-    ids.forEach(function (id) { keep[id] = true; });
-    var visible = [];
-    var kept = [];
-    serverBins.forEach(function (bin) {
-      var id = binID(bin);
-      if (!id || !keep[id]) return;
-      visible.push(bin);
-      kept.push(id);
-    });
-    if (stored.missing || !sameIds(stored.ids, kept)) writeStoredBins(kept);
-    return visible;
+  function captureBinKeyFromHash() {
+    var id = activeBinId();
+    var match = location.hash.match(/^#k=([0-9a-fA-F]{32})$/);
+    if (!id || !match) return;
+    saveBinKey(id, match[1]);
+    history.replaceState(null, "", location.pathname + location.search);
   }
 
-  function retainKnownBinLinks() {
-    var stored = readStoredBins();
-    if (stored.missing || stored.broken) return;
-    var list = document.getElementById("bin-list");
-    if (!list) return;
-    var known = {};
-    stored.ids.forEach(function (id) { known[id] = true; });
-    var active = activeBinId();
-    if (active) known[active] = true;
-    var links = Array.prototype.slice.call(list.querySelectorAll("a.bin-link"));
-    if (!links.length) return;
-    var kept = 0;
-    links.forEach(function (link) {
-      var idEl = link.querySelector(".bin-link-id");
-      var id = idEl ? idEl.textContent : "";
-      if (!known[id]) link.remove();
-      else kept++;
+  function authHeaders(extra) {
+    var headers = { Accept: "application/json" };
+    var keys = readBinKeys();
+    var ids = Object.keys(keys);
+    if (ids.length) headers["X-Bin-Keys"] = JSON.stringify(keys);
+    if (extra) {
+      Object.keys(extra).forEach(function (name) { headers[name] = extra[name]; });
+    }
+    return headers;
+  }
+
+  var refreshBinList = function () {};
+
+  function binName(bin) {
+    return String((bin && (bin.name || bin.Name)) || "");
+  }
+
+  function applyVisibleName(id, name) {
+    if (activeBinId() !== id) return;
+    document.title = (name || ("Bin " + id)) + " · RequestBin";
+    var crumb = document.getElementById("bin-crumb");
+    if (crumb) crumb.textContent = name || id;
+    var input = document.getElementById("bin-name");
+    if (!input || document.activeElement === input) return;
+    var unsaved = (input.value || "") !== (input.getAttribute("data-saved") || "");
+    if (unsaved) return;
+    input.value = name || "";
+    input.setAttribute("data-saved", name || "");
+  }
+
+  function saveBinName(form, id) {
+    var input = form.querySelector('input[name="name"]');
+    if (!input) return;
+    var next = input.value;
+    var previous = input.getAttribute("data-saved") || "";
+    if (next === previous) return;
+    var key = binKey(id);
+    if (!key) return;
+    input.setAttribute("data-saved", next);
+    var body = new URLSearchParams();
+    body.set("key", key);
+    body.set("name", next);
+    fetch(form.getAttribute("action"), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: body.toString()
+    }).then(function (res) {
+      if (!res.ok) throw new Error("status " + res.status);
+      return res.json();
+    }).then(function (data) {
+      var name = data && data.name ? String(data.name) : "";
+      input.value = name;
+      input.setAttribute("data-saved", name);
+      applyVisibleName(id, name);
+      refreshBinList();
+    }).catch(function () {
+      input.setAttribute("data-saved", previous);
+      if (document.activeElement !== input) input.value = previous;
     });
-    if (!kept) list.innerHTML = '<p class="side-empty">No bins yet</p>';
+  }
+
+  function bindBinName() {
+    var input = document.getElementById("bin-name");
+    if (!input || !input.form) return;
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Escape") return;
+      input.value = input.getAttribute("data-saved") || "";
+      input.blur();
+    });
+    input.addEventListener("blur", function () {
+      if ((input.value || "") === (input.getAttribute("data-saved") || "")) return;
+      if (input.form.requestSubmit) input.form.requestSubmit();
+    });
   }
 
   function renderBinList(bins) {
+    document.documentElement.setAttribute("data-own-bins", bins && bins.length ? "1" : "0");
     var list = document.getElementById("bin-list");
     if (!list) return;
     var active = activeBinId();
@@ -562,12 +635,17 @@
     }
     list.innerHTML = bins.map(function (bin) {
       var id = String(bin.id || bin.ID || "");
+      var name = binName(bin);
       var n = bin.requests != null ? bin.requests : (bin.Requests || 0);
       var cls = "bin-link" + (id === active ? " is-active" : "");
       var current = id === active ? ' aria-current="page"' : "";
+      var titleClass = "bin-link-title" + (name ? "" : " is-id");
+      var meta = (name ? '<span class="bin-link-id">' + esc(id) + "</span>" : "") +
+        "<span>" + esc(n) + " request" + (Number(n) === 1 ? "" : "s") + "</span>";
+      if (id === active) applyVisibleName(id, name);
       return '<a class="' + cls + '" href="/bins/' + esc(id) + '"' + current + ">" +
-        '<span class="bin-link-id">' + esc(id) + "</span>" +
-        '<span class="bin-link-meta">' + esc(n) + " request" + (Number(n) === 1 ? "" : "s") + "</span></a>";
+        '<span class="' + titleClass + '">' + esc(name || id) + "</span>" +
+        '<span class="bin-link-meta">' + meta + "</span></a>";
     }).join("");
   }
 
@@ -580,23 +658,33 @@
     function tick() {
       if (inFlight) return;
       inFlight = true;
-      fetch("/api/bins", { headers: { Accept: "application/json" }, cache: "no-store" })
+      fetch("/api/bins", { headers: authHeaders(), cache: "no-store" })
         .then(function (res) {
           if (!res.ok) throw new Error("status " + res.status);
           return res.json();
         })
         .then(function (data) {
           var bins = data && Array.isArray(data.bins) ? data.bins : [];
-          var visible = binsForBrowser(bins);
-          var sig = JSON.stringify(visible) + "|" + activeBinId();
+          var kept = {};
+          var known = readBinKeys();
+          bins.forEach(function (bin) {
+            var id = binID(bin);
+            if (id && known[id]) kept[id] = known[id];
+          });
+          if (Object.keys(known).length !== Object.keys(kept).length) writeBinKeys(kept);
+          var sig = JSON.stringify(bins) + "|" + activeBinId();
           if (sig === lastSig) return;
-          renderBinList(visible);
+          renderBinList(bins);
           lastSig = sig;
         })
         .catch(function () { /* keep the server-rendered list */ })
         .then(function () { inFlight = false; });
     }
 
+    refreshBinList = function () {
+      lastSig = "";
+      tick();
+    };
     tick();
     setInterval(tick, POLL_MS);
   }
@@ -607,6 +695,12 @@
     var binId = inspector.getAttribute("data-bin-id");
     if (!binId || location.pathname.indexOf("/bins/") !== 0) return;
     document.title = "Bin " + binId + " · RequestBin";
+    var key = binKey(binId);
+    if (!key) {
+      document.documentElement.removeAttribute("data-owns-bin");
+      inspector.setAttribute("data-locked", "true");
+      return;
+    }
 
     var lastSig = "";
     var lastCount = inspector.querySelectorAll("input.sel").length;
@@ -622,7 +716,7 @@
       inFlight = true;
       var forced = !!force;
       fetch("/api/bins/" + encodeURIComponent(binId) + "/requests", {
-        headers: { Accept: "application/json" },
+        headers: authHeaders({ "X-Bin-Key": key }),
         cache: "no-store"
       }).then(function (res) {
         if (res.status === 404) {
@@ -630,7 +724,13 @@
           if (activeBinId() === binId) location.assign("/bins");
           return null;
         }
+        if (res.status === 401 || res.status === 403) {
+          document.documentElement.removeAttribute("data-owns-bin");
+          inspector.setAttribute("data-locked", "true");
+          return null;
+        }
         if (!res.ok) throw new Error("status " + res.status);
+        inspector.removeAttribute("data-locked");
         return res.json();
       }).then(function (data) {
         if (!data) return;
@@ -643,7 +743,7 @@
         var prevCount = lastCount;
         var selected = currentSelection(inspector);
         try {
-          renderRequests(inspector, reqs, selected.id, selected.view);
+          renderRequests(inspector, reqs, selected.id, selected.view, selected.respView);
           lastSig = sig;
           lastCount = reqs.length;
           if (live) live.hidden = false;
@@ -667,13 +767,53 @@
     setInterval(function () { tick(false); }, POLL_MS);
   }
 
+  var THEME_KEY = "requestbin-theme";
+
+  function themeMode() {
+    var mode = document.documentElement.getAttribute("data-theme") || "auto";
+    if (mode !== "light" && mode !== "dark" && mode !== "auto") return "auto";
+    return mode;
+  }
+
+  function applyTheme(mode) {
+    if (mode !== "light" && mode !== "dark" && mode !== "auto") mode = "auto";
+    document.documentElement.setAttribute("data-theme", mode);
+    try { localStorage.setItem(THEME_KEY, mode); } catch (e) {}
+    var buttons = document.querySelectorAll(".theme-switch [data-theme-value]");
+    for (var i = 0; i < buttons.length; i++) {
+      var on = buttons[i].getAttribute("data-theme-value") === mode;
+      buttons[i].setAttribute("aria-checked", on ? "true" : "false");
+    }
+  }
+
+  function bindTheme() {
+    var group = document.querySelector(".theme-switch");
+    if (!group) return;
+    applyTheme(themeMode());
+    group.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("[data-theme-value]");
+      if (!btn || !group.contains(btn)) return;
+      applyTheme(btn.getAttribute("data-theme-value"));
+    });
+    group.addEventListener("keydown", function (ev) {
+      if (ev.key !== "ArrowLeft" && ev.key !== "ArrowRight" && ev.key !== "ArrowUp" && ev.key !== "ArrowDown") return;
+      var buttons = Array.prototype.slice.call(group.querySelectorAll("[data-theme-value]"));
+      var index = buttons.indexOf(document.activeElement);
+      if (index < 0) return;
+      ev.preventDefault();
+      var dir = (ev.key === "ArrowRight" || ev.key === "ArrowDown") ? 1 : -1;
+      var next = buttons[(index + dir + buttons.length) % buttons.length];
+      next.focus();
+      applyTheme(next.getAttribute("data-theme-value"));
+    });
+  }
+
   onReady(function () {
+    bindTheme();
     markNav();
     bindCopy();
-    var active = activeBinId();
-    var stored = readStoredBins();
-    if (active && !stored.missing && !stored.broken) rememberBin(active);
-    retainKnownBinLinks();
+    captureBinKeyFromHash();
+    bindBinName();
     colorJSON(document);
     startBinPoll();
     startBinListPoll();

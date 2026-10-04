@@ -3,6 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script>
+    (function () {
+      var mode = "auto";
+      try {
+        var stored = localStorage.getItem("requestbin-theme");
+        if (stored === "light" || stored === "dark" || stored === "auto") mode = stored;
+      } catch (e) {}
+      document.documentElement.setAttribute("data-theme", mode);
+      try {
+        var saved = {};
+        try {
+          var rawKeys = localStorage.getItem("requestbin.binKeys");
+          if (rawKeys) saved = JSON.parse(rawKeys);
+        } catch (e) { saved = {}; }
+        if (!saved || typeof saved !== "object" || Array.isArray(saved)) saved = {};
+        var binPath = location.pathname.match(/^\/bins\/([^/]+)/);
+        var binID = binPath ? decodeURIComponent(binPath[1]) : "";
+        var hashKey = location.hash.match(/^#k=([0-9a-fA-F]{32})$/);
+        if (hashKey && binID) {
+          saved[binID] = hashKey[1];
+          localStorage.setItem("requestbin.binKeys", JSON.stringify(saved));
+          localStorage.removeItem("requestbin.bins");
+          history.replaceState(null, "", location.pathname + location.search);
+        }
+        if (binID && saved[binID]) document.documentElement.setAttribute("data-owns-bin", "1");
+      } catch (e) {}
+    })();
+  </script>
   <title>{{block "title" .}}RequestBin{{end}}</title>
   <link rel="stylesheet" href="/static/css/app.css">
 </head>
@@ -20,6 +48,7 @@
           <a href="/tools" data-nav="tools">HTTP tools</a>
         </nav>
         <form class="new-bin-form" method="post" action="/bins">
+          <input class="new-bin-name" name="name" maxlength="40" placeholder="Name (optional)" aria-label="Bin name" autocomplete="off">
           <button class="new-bin" type="submit">+ New bin</button>
         </form>
       </div>
@@ -30,11 +59,22 @@
         {{else}}
         {{range .Bins}}
         <a class="bin-link{{if .Active}} is-active{{end}}" href="/bins/{{.ID}}"{{if .Active}} aria-current="page"{{end}}>
-          <span class="bin-link-id">{{.ID}}</span>
-          <span class="bin-link-meta">{{.Requests}} request{{if ne .Requests 1}}s{{end}}</span>
+          <span class="bin-link-title{{if not .Name}} is-id{{end}}">{{if .Name}}{{.Name}}{{else}}{{.ID}}{{end}}</span>
+          <span class="bin-link-meta">{{if .Name}}<span class="bin-link-id">{{.ID}}</span>{{end}}<span>{{.Requests}} request{{if ne .Requests 1}}s{{end}}</span></span>
         </a>
         {{end}}
         {{end}}
+      </div>
+      <div class="theme-switch" role="radiogroup" aria-label="Theme">
+        <button type="button" role="radio" data-theme-value="auto" aria-label="Auto" title="Auto">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>
+        </button>
+        <button type="button" role="radio" data-theme-value="light" aria-label="Light" title="Light">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+        </button>
+        <button type="button" role="radio" data-theme-value="dark" aria-label="Dark" title="Dark">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
       </div>
     </aside>
     <div class="workspace">
