@@ -29,7 +29,7 @@ Choose the listen address in this order:
 
 ## Docker
 
-The image is a static binary on `scratch`.
+The image is a static binary on `scratch`, published for `linux/amd64` and `linux/arm64`.
 
 ```sh
 docker pull ghcr.io/cicerbro/requestbin:latest
