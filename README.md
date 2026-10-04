@@ -74,3 +74,15 @@ Clear and delete also require the key.
 ## HTTP tools
 
 `/tools` is a catalog of the httpbin-compatible endpoints mounted at `/httpbin` (for example `/httpbin/get`, `/httpbin/status/418`, `/httpbin/headers`).
+
+## Todo
+
+Replace `data/bins.json` with a SQLite database in WAL mode (`PRAGMA journal_mode=WAL`). Use `modernc.org/sqlite` so the image stays a static binary on `scratch`. Keep the same caps and TTL. Load one bin at a time instead of the whole file, and keep a global byte budget so a public hook cannot fill the disk up to `MAX_BINS × MAX_REQUESTS_PER_BIN × MAX_BODY_BYTES`.
+
+Two tables: `bins` (`id`, `key`, `name`, `created`) and `requests` (`id`, `bin_id`, `method`, `path`, `timestamp`, `remote_addr`, `content_type`, `content_length`, `headers`, `query`, `body`, `form`). Store `headers`, `query`, and `form` as JSON. Store `body` as a blob.
+
+Indexes:
+
+- `bins(created)` for the TTL sweep and for dropping the oldest bins past `MAX_BINS`.
+- `requests(bin_id, timestamp)` for the inspector (one bin, newest first) and for dropping the oldest requests past `MAX_REQUESTS_PER_BIN`.
+- `requests(bin_id)` is covered by that composite index; do not add a second one.
