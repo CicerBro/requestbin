@@ -1,0 +1,12 @@
+services:
+  requestbin:
+    image: ghcr.io/cicerbro/requestbin:latest
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - requestbin:/app/data
+    restart: unless-stopped
+
+volumes:
+  requestbin:
