@@ -134,6 +134,215 @@
     }
   }
 
+  function mediaTypeOf(ct) {
+    var low = String(ct || "").toLowerCase();
+    var semi = low.indexOf(";");
+    if (semi !== -1) low = low.slice(0, semi);
+    return low.replace(/^\s+|\s+$/g, "");
+  }
+
+  function jsonDeclared(ct) {
+    var mt = mediaTypeOf(ct);
+    return mt === "application/json" || mt.slice(-5) === "+json";
+  }
+
+  function xmlDeclared(ct) {
+    var mt = mediaTypeOf(ct);
+    return mt.indexOf("/xml") !== -1 || mt.indexOf("+xml") !== -1;
+  }
+
+  function htmlDeclared(ct) {
+    return mediaTypeOf(ct) === "text/html";
+  }
+
+  function looksLikeXML(s) {
+    if (s.length < 2 || s.charAt(0) !== "<") return false;
+    var c = s.charAt(1);
+    return c === "!" || c === "?" || c === "_" || c === ":" || (c >= "A" && c <= "Z") || (c >= "a" && c <= "z");
+  }
+
+  // Same whitespace rules as prettyXML in markup.go.
+  function prettyXMLText(ctype, body) {
+    var trimmed = String(body == null ? "" : body).replace(/^\s+|\s+$/g, "");
+    if (!trimmed || jsonDeclared(ctype)) return null;
+    if (htmlDeclared(ctype) && !xmlDeclared(ctype)) return null;
+    if (!xmlDeclared(ctype) && !looksLikeXML(trimmed)) return null;
+    var nodes = parseMarkup(trimmed);
+    if (!nodes || !markupHasElem(nodes)) return null;
+    return writeXMLNodes(nodes, 0);
+  }
+
+  function parseMarkup(src) {
+    var p = { s: src, i: 0 };
+    try {
+      var nodes = parseMarkupNodes(p, "");
+      if (p.i < p.s.length && p.s.slice(p.i).replace(/^\s+|\s+$/g, "") !== "") return null;
+      return nodes;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function parseMarkupNodes(p, until) {
+    var nodes = [];
+    while (p.i < p.s.length) {
+      if (p.s.charAt(p.i) !== "<") {
+        var lt = p.s.indexOf("<", p.i);
+        if (lt < 0) lt = p.s.length;
+        nodes.push({ kind: "text", text: p.s.slice(p.i, lt) });
+        p.i = lt;
+        continue;
+      }
+      var start = p.i;
+      var end = scanMarkupTag(p.s, p.i);
+      if (end < 0) throw new Error("tag");
+      var raw = p.s.slice(p.i, end);
+      p.i = end;
+      if (raw.indexOf("<!--") === 0) nodes.push({ kind: "comment", raw: raw });
+      else if (raw.indexOf("<![CDATA[") === 0) nodes.push({ kind: "cdata", raw: raw });
+      else if (raw.indexOf("<?") === 0) nodes.push({ kind: "pi", raw: raw });
+      else if (raw.indexOf("<!") === 0) nodes.push({ kind: "decl", raw: raw });
+      else {
+        var info = markupTagInfo(raw);
+        if (!info.name) throw new Error("name");
+        if (info.closing) {
+          if (!until || info.name !== until) throw new Error("mismatch");
+          p.i = start;
+          return nodes;
+        }
+        var node = { kind: "elem", raw: raw, name: info.name, self: info.self, closeRaw: "", children: [] };
+        if (!info.self) {
+          node.children = parseMarkupNodes(p, info.name);
+          node.closeRaw = takeMarkupClose(p, info.name);
+        }
+        nodes.push(node);
+      }
+    }
+    if (until) throw new Error("unclosed");
+    return nodes;
+  }
+
+  function scanMarkupTag(s, i) {
+    if (s.charAt(i) !== "<") return -1;
+    if (s.indexOf("<!--", i) === i) {
+      var comment = s.indexOf("-->", i + 4);
+      return comment < 0 ? -1 : comment + 3;
+    }
+    if (s.indexOf("<![CDATA[", i) === i) {
+      var cdata = s.indexOf("]]>", i + 9);
+      return cdata < 0 ? -1 : cdata + 3;
+    }
+    if (s.indexOf("<?", i) === i) {
+      var pi = s.indexOf("?>", i + 2);
+      return pi < 0 ? -1 : pi + 2;
+    }
+    var quote = "";
+    for (var j = i + 1; j < s.length; j++) {
+      var c = s.charAt(j);
+      if (quote) {
+        if (c === quote) quote = "";
+        continue;
+      }
+      if (c === '"' || c === "'") {
+        quote = c;
+        continue;
+      }
+      if (c === ">") return j + 1;
+    }
+    return -1;
+  }
+
+  function markupTagInfo(raw) {
+    if (raw.length < 3 || raw.charAt(0) !== "<" || raw.charAt(raw.length - 1) !== ">") {
+      return { name: "", closing: false, self: false };
+    }
+    var self = raw.slice(-2) === "/>";
+    var inner = raw.slice(1, -1);
+    if (self) inner = inner.slice(0, -1);
+    var closing = false;
+    if (inner.charAt(0) === "/") {
+      closing = true;
+      inner = inner.slice(1);
+    }
+    inner = inner.replace(/^[\t\r\n ]+/, "");
+    var end = 0;
+    while (end < inner.length) {
+      var ch = inner.charAt(end);
+      if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "/") break;
+      end++;
+    }
+    return { name: inner.slice(0, end), closing: closing, self: self };
+  }
+
+  function takeMarkupClose(p, name) {
+    if (p.i >= p.s.length || p.s.charAt(p.i) !== "<") throw new Error("close");
+    var end = scanMarkupTag(p.s, p.i);
+    if (end < 0) throw new Error("close");
+    var raw = p.s.slice(p.i, end);
+    var info = markupTagInfo(raw);
+    if (!info.closing || info.self || info.name !== name) throw new Error("close");
+    p.i = end;
+    return raw;
+  }
+
+  function markupHasElem(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].kind === "elem" || (nodes[i].children && markupHasElem(nodes[i].children))) return true;
+    }
+    return false;
+  }
+
+  function visibleMarkup(nodes) {
+    var out = [];
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].kind === "text" && nodes[i].text.replace(/^\s+|\s+$/g, "") === "") continue;
+      out.push(nodes[i]);
+    }
+    return out;
+  }
+
+  function markupIndent(depth) {
+    var s = "";
+    for (var i = 0; i < depth; i++) s += "  ";
+    return s;
+  }
+
+  function writeXMLNodes(nodes, depth) {
+    var kids = visibleMarkup(nodes);
+    var parts = [];
+    for (var i = 0; i < kids.length; i++) {
+      parts.push(markupIndent(depth) + writeXMLNode(kids[i], depth));
+    }
+    return parts.join("\n");
+  }
+
+  function writeXMLNode(n, depth) {
+    if (n.kind !== "elem") {
+      if (n.kind === "text") return n.text.replace(/^\s+|\s+$/g, "");
+      return n.raw;
+    }
+    if (n.self) return n.raw;
+    var kids = visibleMarkup(n.children || []);
+    if (!kids.length) return n.raw + (n.closeRaw || "");
+    if (kids.length === 1 && kids[0].kind === "text") return n.raw + kids[0].text.replace(/^\s+|\s+$/g, "") + n.closeRaw;
+    return n.raw + "\n" + writeXMLNodes(kids, depth + 1) + "\n" + markupIndent(depth) + n.closeRaw;
+  }
+
+  function presentBody(ctype, body) {
+    var pretty = prettyJSONText(ctype, body);
+    if (pretty) return { pretty: pretty, label: "Pretty JSON", hl: "json" };
+    if (jsonDeclared(ctype) || (htmlDeclared(ctype) && !xmlDeclared(ctype))) {
+      return { pretty: null, label: "", hl: "" };
+    }
+    var xml = prettyXMLText(ctype, body);
+    if (xml) return { pretty: xml, label: "Pretty XML", hl: "xml" };
+    var trimmed = String(body == null ? "" : body).replace(/^\s+|\s+$/g, "");
+    if (trimmed && (xmlDeclared(ctype) || looksLikeXML(trimmed))) {
+      return { pretty: null, label: "", hl: "xml" };
+    }
+    return { pretty: null, label: "", hl: "" };
+  }
+
   function headerBlock(method, path, headers) {
     var lines = [String(method || "") + " " + (path || "/") + " HTTP/1.1"];
     headers.forEach(function (h) {
@@ -174,12 +383,18 @@
     return pretty || hookBody(binId, reqId);
   }
 
-  function colorJSON(root) {
-    if (typeof highlightJSON !== "function") return;
-    (root || document).querySelectorAll("span.json").forEach(function (el) {
+  function colorMarkup(root) {
+    paintMarkup(root, ".json", typeof highlightJSON === "function" ? highlightJSON : null);
+    paintMarkup(root, ".xml", typeof highlightXML === "function" ? highlightXML : null);
+    paintMarkup(root, ".msg-headers", typeof highlightHeaders === "function" ? highlightHeaders : null);
+  }
+
+  function paintMarkup(root, sel, fn) {
+    if (!fn) return;
+    (root || document).querySelectorAll(sel).forEach(function (el) {
       if (el.getAttribute("data-colored") === "1") return;
       try {
-        el.innerHTML = highlightJSON(el.textContent);
+        el.innerHTML = fn(el.textContent);
         el.setAttribute("data-colored", "1");
       } catch (e) { /* leave the plain text */ }
     });
@@ -206,7 +421,7 @@
     return id == null || id === "" ? "i" + index : String(id);
   }
 
-  function renderRequests(inspector, reqs, selectedId, selectedView, respView) {
+  function renderRequests(inspector, reqs, selectedId, selectedView, respView, dumpOn, respDumpOn) {
     var list = document.getElementById("req-list");
     var slot = document.getElementById("detail-slot");
     var empty = document.getElementById("empty-detail");
@@ -266,13 +481,15 @@
       var reqId = String(pick(req, ["ID", "id"]) || "");
       var head = headerBlock(method, path, headers);
       var raw = head + body;
-      var pretty = prettyJSONText(ctype, body);
-      var showPretty = !!pretty && !(i === selIndex && selectedView === "raw");
+      var pres = presentBody(ctype, body);
+      var showPretty = !!pres.pretty && !(i === selIndex && selectedView === "raw");
       var respBody = hookBody(binId, reqId);
       var respPretty = prettyHookBody(binId, reqId);
       var resp = HOOK_HEAD + respBody;
       var respPrettyMsg = HOOK_HEAD + respPretty;
       var showRespPretty = !(i === selIndex && respView === "raw");
+      var showDump = i === selIndex && !!dumpOn;
+      var showRespDump = i === selIndex && !!respDumpOn;
 
       radios.push(
         '<input class="sel" type="radio" name="selected-request" id="sel-' + i +
@@ -288,17 +505,6 @@
         '<time class="req-time" datetime="' + esc(ts) + '">' + esc(relTime(ts)) + "</time></label>"
       );
 
-      var viewInputs = '<input class="view-input" type="radio" name="view-' + i + '" id="view-' + i + '-raw" value="raw"' + (showPretty ? "" : " checked") + ">";
-      var prettyControl = '<span class="is-disabled" title="Body is not JSON">Pretty JSON</span>';
-      var prettyView = "";
-      var prettyStat = "";
-      if (pretty) {
-        viewInputs += '<input class="view-input" type="radio" name="view-' + i + '" id="view-' + i + '-pretty" value="pretty"' + (showPretty ? " checked" : "") + ">";
-        prettyControl = '<label for="view-' + i + '-pretty">Pretty JSON</label>';
-        prettyStat = '<span class="msg-stat stat-pretty">' + esc(statLabel(head + pretty)) + "</span>";
-        prettyView = '<pre class="msg view-pretty"><span class="msg-lead">' + esc(head) + '</span><span class="json">' + esc(pretty) + "</span></pre>";
-      }
-
       panes.push(
         '<article class="detail-body" id="pane-' + i + '">' +
         '<header class="detail-head">' +
@@ -311,29 +517,37 @@
         '<span class="detail-aside">' +
         '<span class="detail-ip">' + esc(clientIP(addr)) + "</span>" +
         '<time class="detail-when" datetime="' + esc(ts) + '">' + esc(stamp(ts)) + "</time></span></div></header>" +
-        '<section class="req-card">' + viewInputs +
-        '<header class="card-head"><h2>' + ICON_DOC + 'Request <span class="http-tag">HTTP</span></h2>' +
-        '<span class="msg-stat stat-raw">' + esc(statLabel(raw)) + "</span>" + prettyStat +
-        '<div class="view-toggle" role="group" aria-label="Request body format">' +
-        '<label for="view-' + i + '-raw">Raw</label>' + prettyControl + "</div>" +
-        '<button class="icon-btn" type="button" data-copy-visible aria-label="Copy request">' + ICON_COPY + "</button></header>" +
-        '<pre class="msg view-raw">' + esc(raw) + "</pre>" + prettyView + "</section>" +
+        messageCard({
+          response: false,
+          index: i,
+          head: head,
+          body: body,
+          raw: raw,
+          pretty: pres.pretty,
+          prettyLabel: pres.label,
+          hl: pres.hl,
+          showPretty: showPretty,
+          dumpOn: showDump,
+          prettyStat: pres.pretty ? statLabel(head + pres.pretty) : ""
+        }) +
         '<section class="kv-card"><h3>Query <span class="kv-n">' + query.length + "</span></h3>" +
         table(query, "No query parameters.") +
         '<h3>Form <span class="kv-n">' + form.length + "</span></h3>" +
         table(form, "No form fields.") + "</section>" +
-        '<section class="req-card">' +
-        '<input class="view-input" type="radio" name="resp-view-' + i + '" id="resp-view-' + i + '-raw" value="raw"' + (showRespPretty ? "" : " checked") + ">" +
-        '<input class="view-input" type="radio" name="resp-view-' + i + '" id="resp-view-' + i + '-pretty" value="pretty"' + (showRespPretty ? " checked" : "") + ">" +
-        '<header class="card-head"><h2>' + ICON_DOC + 'Response <span class="http-tag">HTTP</span></h2>' +
-        '<span class="msg-stat stat-raw">' + esc(statLabel(resp)) + "</span>" +
-        '<span class="msg-stat stat-pretty">' + esc(statLabel(respPrettyMsg)) + "</span>" +
-        '<div class="view-toggle" role="group" aria-label="Response body format">' +
-        '<label for="resp-view-' + i + '-raw">Raw</label>' +
-        '<label for="resp-view-' + i + '-pretty">Pretty JSON</label></div>' +
-        '<button class="icon-btn" type="button" data-copy-visible aria-label="Copy response">' + ICON_COPY + "</button></header>" +
-        '<pre class="msg view-raw">' + esc(resp) + "</pre>" +
-        '<pre class="msg view-pretty"><span class="msg-lead">' + esc(HOOK_HEAD) + '</span><span class="json">' + esc(respPretty) + "</span></pre></section></article>"
+        messageCard({
+          response: true,
+          index: i,
+          head: HOOK_HEAD,
+          body: respBody,
+          raw: resp,
+          pretty: respPretty,
+          prettyLabel: "Pretty JSON",
+          hl: "json",
+          showPretty: showRespPretty,
+          dumpOn: showRespDump,
+          prettyStat: statLabel(respPrettyMsg)
+        }) +
+        "</article>"
       );
     });
 
@@ -344,7 +558,53 @@
     style.id = "sel-style";
     style.textContent = rules.join("\n");
     inspector.appendChild(style);
-    colorJSON(inspector);
+    colorMarkup(inspector);
+  }
+
+  function messageCard(o) {
+    var idBase = (o.response ? "resp-view-" : "view-") + o.index;
+    var dumpID = (o.response ? "resp-dump-" : "dump-") + o.index;
+    var rawID = idBase + "-raw";
+    var prettyID = idBase + "-pretty";
+    var radios = "";
+    if (o.pretty) {
+      radios =
+        '<input class="view-input" type="radio" name="' + idBase + '" id="' + rawID + '" value="raw"' + (o.showPretty ? "" : " checked") + ">" +
+        '<input class="view-input" type="radio" name="' + idBase + '" id="' + prettyID + '" value="pretty"' + (o.showPretty ? " checked" : "") + ">";
+    }
+    var title = o.response ? "Response" : "Request";
+    var copyLabel = o.response ? "Copy response" : "Copy request";
+    var textTitle = o.response ? "Show the entire response as text" : "Show the entire request as text";
+    var textLabel = o.response ? "Raw Response" : "Raw Request";
+    var prettyStat = o.pretty ? '<span class="msg-stat stat-pretty">' + esc(o.prettyStat) + "</span>" : "";
+    var bodyBlock = "";
+    if (o.body) {
+      var toggle = "";
+      var prettyPre = "";
+      if (o.pretty) {
+        toggle =
+          '<div class="view-toggle" role="group" aria-label="' + title + ' body format">' +
+          '<label for="' + rawID + '">Raw</label>' +
+          '<label for="' + prettyID + '">' + esc(o.prettyLabel) + "</label></div>";
+        prettyPre = '<pre class="msg view-body view-body-pretty ' + o.hl + '">' + esc(o.pretty) + "</pre>";
+      }
+      bodyBlock =
+        '<div class="body-bar"><span class="body-kicker">Body</span>' + toggle + "</div>" +
+        '<pre class="msg view-body view-body-raw' + (o.hl ? " " + o.hl : "") + '">' + esc(o.body) + "</pre>" +
+        prettyPre;
+    }
+    var headText = String(o.head || "").replace(/\n+$/, "");
+    return (
+      '<section class="req-card">' + radios +
+      '<header class="card-head"><div class="card-title"><h2>' + ICON_DOC + title +
+      '<span class="http-tag">HTTP</span></h2>' +
+      '<input class="view-input dump-check" type="checkbox" id="' + dumpID + '"' + (o.dumpOn ? " checked" : "") + ">" +
+      '<label class="raw-pill" for="' + dumpID + '" title="' + esc(textTitle) + '">' + textLabel + "</label></div>" +
+      '<span class="msg-stat stat-raw">' + esc(statLabel(o.raw)) + "</span>" + prettyStat +
+      '<button class="icon-btn" type="button" data-copy-visible aria-label="' + copyLabel + '">' + ICON_COPY + "</button></header>" +
+      '<div class="view-parts"><pre class="msg msg-headers">' + esc(headText) + "</pre>" + bodyBlock + "</div>" +
+      '<pre class="msg view-text">' + esc(o.raw) + "</pre></section>"
+    );
   }
 
   function currentSelection(inspector) {
@@ -352,15 +612,21 @@
     var id = checked ? checked.getAttribute("data-id") : "";
     var view = "pretty";
     var respView = "pretty";
+    var dump = false;
+    var respDump = false;
     if (checked) {
       var pane = document.getElementById(checked.id.replace("sel-", "pane-"));
       var cards = pane ? pane.querySelectorAll(".req-card") : [];
-      var reqInput = cards[0] && cards[0].querySelector("input.view-input:checked");
-      var respInput = cards[1] && cards[1].querySelector("input.view-input:checked");
+      var reqInput = cards[0] && cards[0].querySelector('input[type="radio"].view-input:checked');
+      var respInput = cards[1] && cards[1].querySelector('input[type="radio"].view-input:checked');
+      var reqDump = cards[0] && cards[0].querySelector(".dump-check");
+      var respDumpEl = cards[1] && cards[1].querySelector(".dump-check");
       if (reqInput) view = reqInput.value;
       if (respInput) respView = respInput.value;
+      dump = !!(reqDump && reqDump.checked);
+      respDump = !!(respDumpEl && respDumpEl.checked);
     }
-    return { id: id || "", view: view, respView: respView };
+    return { id: id || "", view: view, respView: respView, dump: dump, respDump: respDump };
   }
 
   function markNav() {
@@ -428,10 +694,20 @@
       var vis = event.target.closest && event.target.closest("[data-copy-visible]");
       if (vis) {
         var card = vis.closest(".req-card");
-        var checked = card && card.querySelector("input.view-input:checked");
+        if (!card) return;
+        var dump = card.querySelector(".dump-check");
+        if (dump && dump.checked) {
+          var full = card.querySelector(".view-text");
+          copyText(full ? full.textContent : "", vis);
+          return;
+        }
+        var headers = card.querySelector(".msg-headers");
+        var checked = card.querySelector('input[type="radio"].view-input:checked');
         var mode = checked ? checked.value : "raw";
-        var node = card && card.querySelector(mode === "pretty" ? ".view-pretty" : ".view-raw");
-        copyText(node ? node.textContent : "", vis);
+        var bodyNode = card.querySelector(mode === "pretty" ? ".view-body-pretty" : ".view-body-raw");
+        var text = headers ? headers.textContent.replace(/\n+$/, "") : "";
+        if (bodyNode && bodyNode.textContent) text += "\n\n" + bodyNode.textContent;
+        copyText(text, vis);
         return;
       }
       var btn = event.target.closest && event.target.closest("[data-copy-target]");
@@ -743,7 +1019,7 @@
         var prevCount = lastCount;
         var selected = currentSelection(inspector);
         try {
-          renderRequests(inspector, reqs, selected.id, selected.view, selected.respView);
+          renderRequests(inspector, reqs, selected.id, selected.view, selected.respView, selected.dump, selected.respDump);
           lastSig = sig;
           lastCount = reqs.length;
           if (live) live.hidden = false;
@@ -814,7 +1090,7 @@
     bindCopy();
     captureBinKeyFromHash();
     bindBinName();
-    colorJSON(document);
+    colorMarkup(document);
     startBinPoll();
     startBinListPoll();
   });

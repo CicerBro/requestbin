@@ -16,6 +16,8 @@ import (
 func viewFuncs() template.FuncMap {
 	return template.FuncMap{
 		"prettyJSON":  prettyJSON,
+		"formatBody":  formatBody,
+		"trimNL":      func(s string) string { return strings.TrimRight(s, "\n") },
 		"rawHead":     rawHead,
 		"statLabel":   statLabel,
 		"bytesLabel":  bytesLabel,
@@ -56,6 +58,38 @@ func jsonDeclared(contentType string) bool {
 	}
 	mt = strings.ToLower(mt)
 	return mt == "application/json" || strings.HasSuffix(mt, "+json")
+}
+
+// bodyView is how a captured body is shown: pretty text when it can be
+// formatted, and a highlight class for JSON or XML.
+type bodyView struct {
+	Pretty string
+	Kind   string
+	Label  string
+	Class  string
+}
+
+func formatBody(contentType, body string) bodyView {
+	if strings.TrimSpace(body) == "" {
+		return bodyView{}
+	}
+	if pretty := prettyJSON(contentType, body); pretty != "" {
+		return bodyView{Pretty: pretty, Kind: "json", Label: "Pretty JSON", Class: "json"}
+	}
+	if jsonDeclared(contentType) {
+		return bodyView{}
+	}
+	if htmlDeclared(contentType) && !xmlDeclared(contentType) {
+		return bodyView{}
+	}
+	if pretty := prettyXML(contentType, body); pretty != "" {
+		return bodyView{Pretty: pretty, Kind: "xml", Label: "Pretty XML", Class: "xml"}
+	}
+	trimmed := strings.TrimSpace(body)
+	if xmlDeclared(contentType) || looksLikeXML(trimmed) {
+		return bodyView{Kind: "xml", Class: "xml"}
+	}
+	return bodyView{}
 }
 
 func looksLikeJSON(s string) bool {

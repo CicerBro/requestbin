@@ -105,7 +105,7 @@
         <p>Send any HTTP request to the URL above. It shows up in the list.</p>
       </div>
       {{range $i, $req := .Requests}}
-      {{$pretty := prettyJSON $req.ContentType $req.Body}}
+      {{$fmt := formatBody $req.ContentType $req.Body}}
       {{$head := rawHead $req.Method $req.Path $req.Headers}}
       {{$raw := printf "%s%s" $head $req.Body}}
       <article class="detail-body" id="pane-{{$i}}">
@@ -123,32 +123,43 @@
           </div>
         </header>
         <section class="req-card">
-          <input class="view-input" type="radio" name="view-{{$i}}" id="view-{{$i}}-raw" value="raw"{{if not $pretty}} checked{{end}}>
-          {{if $pretty}}
+          {{if $fmt.Pretty}}
+          <input class="view-input" type="radio" name="view-{{$i}}" id="view-{{$i}}-raw" value="raw">
           <input class="view-input" type="radio" name="view-{{$i}}" id="view-{{$i}}-pretty" value="pretty" checked>
           {{end}}
           <header class="card-head">
+            <div class="card-title">
             <h2>
               <svg class="card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
               Request
               <span class="http-tag">HTTP</span>
             </h2>
-            <span class="msg-stat stat-raw">{{statLabel $raw}}</span>
-            {{if $pretty}}<span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $head $pretty)}}</span>{{end}}
-            <div class="view-toggle" role="group" aria-label="Request body format">
-              <label for="view-{{$i}}-raw">Raw</label>
-              {{if $pretty}}
-              <label for="view-{{$i}}-pretty">Pretty JSON</label>
-              {{else}}
-              <span class="is-disabled" title="Body is not JSON">Pretty JSON</span>
-              {{end}}
+            <input class="view-input dump-check" type="checkbox" id="dump-{{$i}}">
+            <label class="raw-pill" for="dump-{{$i}}" title="Show the entire request as text">Raw Request</label>
             </div>
+            <span class="msg-stat stat-raw">{{statLabel $raw}}</span>
+            {{if $fmt.Pretty}}<span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $head $fmt.Pretty)}}</span>{{end}}
             <button class="icon-btn" type="button" data-copy-visible aria-label="Copy request">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
           </header>
-          <pre class="msg view-raw">{{$raw}}</pre>
-          {{if $pretty}}<pre class="msg view-pretty"><span class="msg-lead">{{$head}}</span><span class="json">{{$pretty}}</span></pre>{{end}}
+          <div class="view-parts">
+            <pre class="msg msg-headers">{{trimNL $head}}</pre>
+            {{if $req.Body}}
+            <div class="body-bar">
+              <span class="body-kicker">Body</span>
+              {{if $fmt.Pretty}}
+              <div class="view-toggle" role="group" aria-label="Request body format">
+                <label for="view-{{$i}}-raw">Raw</label>
+                <label for="view-{{$i}}-pretty">{{$fmt.Label}}</label>
+              </div>
+              {{end}}
+            </div>
+            <pre class="msg view-body view-body-raw{{if $fmt.Class}} {{$fmt.Class}}{{end}}">{{$req.Body}}</pre>
+            {{if $fmt.Pretty}}<pre class="msg view-body view-body-pretty {{$fmt.Class}}">{{$fmt.Pretty}}</pre>{{end}}
+            {{end}}
+          </div>
+          <pre class="msg view-text">{{$raw}}</pre>
         </section>
         <section class="kv-card">
           <h3>Query <span class="kv-n">{{len $req.Query}}</span></h3>
@@ -166,28 +177,40 @@
         </section>
         <section class="req-card">
           {{$respBody := hookBody $.Bin.ID $req.ID}}
-          {{$respPretty := prettyJSON "application/json" $respBody}}
+          {{$respFmt := formatBody "application/json" $respBody}}
           {{$respHead := hookHead}}
+          {{$respRaw := printf "%s%s" $respHead $respBody}}
           <input class="view-input" type="radio" name="resp-view-{{$i}}" id="resp-view-{{$i}}-raw" value="raw">
           <input class="view-input" type="radio" name="resp-view-{{$i}}" id="resp-view-{{$i}}-pretty" value="pretty" checked>
           <header class="card-head">
+            <div class="card-title">
             <h2>
               <svg class="card-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
               Response
               <span class="http-tag">HTTP</span>
             </h2>
-            <span class="msg-stat stat-raw">{{statLabel (printf "%s%s" $respHead $respBody)}}</span>
-            <span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $respHead $respPretty)}}</span>
-            <div class="view-toggle" role="group" aria-label="Response body format">
-              <label for="resp-view-{{$i}}-raw">Raw</label>
-              <label for="resp-view-{{$i}}-pretty">Pretty JSON</label>
+            <input class="view-input dump-check" type="checkbox" id="resp-dump-{{$i}}">
+            <label class="raw-pill" for="resp-dump-{{$i}}" title="Show the entire response as text">Raw Response</label>
             </div>
+            <span class="msg-stat stat-raw">{{statLabel $respRaw}}</span>
+            <span class="msg-stat stat-pretty">{{statLabel (printf "%s%s" $respHead $respFmt.Pretty)}}</span>
             <button class="icon-btn" type="button" data-copy-visible aria-label="Copy response">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
             </button>
           </header>
-          <pre class="msg view-raw">{{printf "%s%s" $respHead $respBody}}</pre>
-          <pre class="msg view-pretty"><span class="msg-lead">{{$respHead}}</span><span class="json">{{$respPretty}}</span></pre>
+          <div class="view-parts">
+            <pre class="msg msg-headers">{{trimNL $respHead}}</pre>
+            <div class="body-bar">
+              <span class="body-kicker">Body</span>
+              <div class="view-toggle" role="group" aria-label="Response body format">
+                <label for="resp-view-{{$i}}-raw">Raw</label>
+                <label for="resp-view-{{$i}}-pretty">Pretty JSON</label>
+              </div>
+            </div>
+            <pre class="msg view-body view-body-raw json">{{$respBody}}</pre>
+            <pre class="msg view-body view-body-pretty json">{{$respFmt.Pretty}}</pre>
+          </div>
+          <pre class="msg view-text">{{$respRaw}}</pre>
         </section>
       </article>
       {{end}}

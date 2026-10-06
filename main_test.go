@@ -354,7 +354,7 @@ func TestRoutes(t *testing.T) {
 	if pageRes.StatusCode != http.StatusOK {
 		t.Fatalf("bin page = %d %s", pageRes.StatusCode, pageBody)
 	}
-	for _, want := range []string{id, "DELETE", "POST", "/foo?x=1", "https://bin.example/hooks/" + id, `href="/bins"`, "sidebar", "Pretty JSON", "Refresh", "Clear", "Delete", "local"} {
+	for _, want := range []string{id, "DELETE", "POST", "/foo?x=1", "https://bin.example/hooks/" + id, `href="/bins"`, "sidebar", "Pretty JSON", "msg-headers", "raw-pill", "Refresh", "Clear", "Delete", "local"} {
 		if !strings.Contains(pageBody, want) {
 			t.Fatalf("bin page missing %q\n%s", want, pageBody)
 		}
